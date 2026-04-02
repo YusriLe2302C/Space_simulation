@@ -76,6 +76,7 @@ async function apiFetch(
         headers: {
           "content-type":  "application/json",
           "authorization": `Bearer ${token}`,
+          "x-run-id":      import.meta.env.VITE_ACM_RUN_ID ?? "default",
           ...(fetchOptions.headers ?? {}),
         },
       });

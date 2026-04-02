@@ -12,7 +12,10 @@ const socket = io(SOCKET_URL, {
   reconnectionDelayMax: 15000,
   randomizationFactor:  0.4,
   timeout:              10000,
-  transports:           ["websocket"],  // skip long-polling entirely
+  transports:           ["websocket"],
+  auth: {
+    runId: import.meta.env.VITE_ACM_RUN_ID ?? "default",
+  },
 });
 
 // ── Lifecycle helpers ─────────────────────────────────────────────────────────

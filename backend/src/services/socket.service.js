@@ -13,10 +13,13 @@ function getIO() {
   return ioInstance;
 }
 
-function broadcast(event, payload) {
+function broadcast(event, payload, runId) {
   if (!ioInstance) return;
-  ioInstance.emit(event, payload);
+  if (runId) {
+    ioInstance.to(runId).emit(event, payload);
+  } else {
+    ioInstance.emit(event, payload);
+  }
 }
 
 module.exports = { initSocket, getIO, broadcast };
-

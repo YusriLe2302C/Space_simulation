@@ -10,9 +10,9 @@ const { initSocket }   = require("./src/services/socket.service");
 
 const EARTH_RADIUS_KM = 6378.1363;
 const RAD2DEG         = 180 / Math.PI;
-const STEP_SECONDS    = 60;    // sim seconds advanced per tick
-const STEP_INTERVAL_MS = 5000; // target real-time interval between ticks
-const PYTHON_TIMEOUT_MS = 10000; // max time to wait for Python engine
+const STEP_SECONDS      = 60;
+const STEP_INTERVAL_MS  = 8000;
+const PYTHON_TIMEOUT_MS = 25000;
 
 function eciToGeo([x, y, z]) {
   const rMag = Math.hypot(x, y, z);
@@ -45,14 +45,20 @@ async function main() {
 
   const io = new Server(server, {
     cors: {
-      origin:  env.corsOrigin === "*" ? true : env.corsOrigin,
+      origin:  env.corsOrigin.split(",").map((o) => o.trim()),
       methods: ["GET", "POST"],
     },
   });
   initSocket(io);
 
   io.on("connection", (socket) => {
-    logger.info("socket_connected",    { id: socket.id });
+    const runId = socket.handshake.auth?.runId;
+    if (!runId) {
+      socket.disconnect();
+      return;
+    }
+    socket.join(runId);
+    logger.info("socket_connected", { id: socket.id, runId });
     socket.on("disconnect", () => logger.info("socket_disconnected", { id: socket.id }));
   });
 
@@ -74,10 +80,11 @@ async function main() {
       simulateStepHttp({
         pythonEngineUrl: env.pythonEngineUrl,
         objects,
-        stepSeconds: STEP_SECONDS,
+        stepSeconds:     STEP_SECONDS,
+        timeoutMs:       PYTHON_TIMEOUT_MS,
         logger,
       }),
-      PYTHON_TIMEOUT_MS,
+      PYTHON_TIMEOUT_MS + 2000,
     );
 
     const sim = await advanceSimulationTimestamp({ runId: env.runId, stepSeconds: STEP_SECONDS });
@@ -101,7 +108,7 @@ async function main() {
       maneuvers_executed: engine.maneuvers,
       objects:            satObjects,
       orbit_paths:        engine.orbit_paths,
-    });
+    }, env.runId);
   }
 
   // ── Safe async loop — no overlap, backpressure-aware ───────────────────────

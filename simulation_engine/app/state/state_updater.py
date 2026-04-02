@@ -50,21 +50,19 @@ def _eci_to_latlon(r_km: np.ndarray) -> tuple[float, float, float]:
 
 def generate_orbit_path(
     state: np.ndarray,
-    steps: int = 90,
-    dt_s: float = 60.0,
+    steps: int = 60,
+    dt_s: float = 90.0,
 ) -> list[dict]:
     """
     Propagate one object forward steps x dt_s seconds using RK4+J2.
-    Returns [{lat, lon, alt}, ...] — 90 steps x 60s = one full LEO orbit.
-    Called once per satellite per simulate_step; results sent to frontend
-    so OrbitPath and GroundTrack can render trajectory lines.
+    Reduced to 60 steps x 90s = 90 min orbit with fewer points for speed.
     """
     s = np.asarray(state, dtype=np.float64).copy().reshape(1, 6)
     path: list[dict] = []
     for _ in range(steps):
         s = rk4_step_batch(s, dt_s, eci_derivative_batch)
         lat, lon, alt = _eci_to_latlon(s[0, 0:3])
-        path.append({"lat": round(lat, 4), "lon": round(lon, 4), "alt": round(alt, 2)})
+        path.append({"lat": round(lat, 3), "lon": round(lon, 3), "alt": round(alt, 1)})
     return path
 
 
@@ -232,13 +230,23 @@ def simulate_step(step_seconds: float) -> dict:
 
     collisions = collision_count(close_approaches)
 
-    # Build 90-minute orbit paths for controllable satellites only.
-    # Sent to frontend so GroundTrack and OrbitPath can render trajectory lines.
+    # Build orbit paths for controllable satellites — batched for speed.
+    # All satellite states propagated together in one RK4 batch per step.
     orbit_paths: dict[str, list[dict]] = {}
-    for obj_id in sat_ids_only:
-        rec = GLOBAL_STATE.objects.get(obj_id)
-        if rec is not None:
-            orbit_paths[obj_id] = generate_orbit_path(rec.state)
+    if sat_ids_only:
+        sat_states = np.stack(
+            [GLOBAL_STATE.objects[oid].state for oid in sat_ids_only], axis=0
+        )
+        ORBIT_STEPS = 60
+        ORBIT_DT    = 90.0
+        step_paths: list[list[dict]] = [[] for _ in sat_ids_only]
+        for _ in range(ORBIT_STEPS):
+            sat_states = rk4_step_batch(sat_states, ORBIT_DT, eci_derivative_batch)
+            for k, oid in enumerate(sat_ids_only):
+                lat, lon, alt = _eci_to_latlon(sat_states[k, 0:3])
+                step_paths[k].append({"lat": round(lat, 3), "lon": round(lon, 3), "alt": round(alt, 1)})
+        for k, oid in enumerate(sat_ids_only):
+            orbit_paths[oid] = step_paths[k]
 
     # Persist state after every step so a restart can resume cleanly
     GLOBAL_STATE.save()

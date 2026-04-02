@@ -17,6 +17,7 @@ frontend/%~dp0public/
 # Env — keep .env.example, ignore real secrets
 backend/.env
 frontend/.env
+simulation_engine/.env
 
 # OS
 .DS_Store

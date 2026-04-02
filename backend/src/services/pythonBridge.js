@@ -45,12 +45,13 @@ async function simulateStepHttp({
   pythonEngineUrl,
   objects,
   stepSeconds,
-  timeoutMs = 6000,
-  retries = 2,
+  timeoutMs = 25000,
+  retries = 1,
   logger,
 }) {
-  const url = `${pythonEngineUrl.replace(/\/+$/, "")}/simulate`;
-  const body = JSON.stringify({ objects, step_seconds: stepSeconds });
+  const url    = `${pythonEngineUrl.replace(/\/+$/, "")}/simulate`;
+  const secret = process.env.ENGINE_SECRET;
+  const body   = JSON.stringify({ objects, step_seconds: stepSeconds });
 
   let attempt = 0;
   // eslint-disable-next-line no-constant-condition
@@ -61,10 +62,10 @@ async function simulateStepHttp({
 
     try {
       const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
+        method:  "POST",
+        headers: { "content-type": "application/json", "x-engine-key": secret },
         body,
-        signal: controller.signal,
+        signal:  controller.signal,
       });
 
       if (!res.ok) {
@@ -99,12 +100,16 @@ async function simulateStepHttp({
 
 module.exports = { simulateStepHttp, predictHttp };
 
-async function predictHttp({ pythonEngineUrl, horizonS = 86400, dtS = 60, timeoutMs = 15000 }) {
-  const url = `${pythonEngineUrl.replace(/\/+$/, "")}/predict?horizon_s=${horizonS}&dt_s=${dtS}`;
+async function predictHttp({ pythonEngineUrl, horizonS = 86400, dtS = 300, timeoutMs = 30000 }) {
+  const url    = `${pythonEngineUrl.replace(/\/+$/, "")}/predict?horizon_s=${horizonS}&dt_s=${dtS}`;
+  const secret = process.env.ENGINE_SECRET;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, {
+      signal:  controller.signal,
+      headers: { "x-engine-key": secret },
+    });
     if (!res.ok) throw new Error(`Predict failed: ${res.status}`);
     return await res.json();
   } finally {

@@ -36,6 +36,8 @@ class GlobalState:
     def __init__(self) -> None:
         self.objects: dict[str, ObjectRecord] = {}
         self.sim_time_s: float = 0.0
+        self._step_count: int = 0
+        self._save_every: int = 10  # only persist every N steps
 
     def upsert_object(self, obj_id: str, state: list[float]) -> None:
         st = ensure_state(np.asarray(state, dtype=np.float64))
@@ -65,11 +67,10 @@ class GlobalState:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def save(self) -> None:
-        """
-        Serialise the full simulation state to a JSON snapshot file.
-        Called at the end of every simulate_step so a restart can resume
-        from the last known state without data loss.
-        """
+        """Persist state to disk — throttled to every _save_every steps."""
+        self._step_count += 1
+        if self._step_count % self._save_every != 0:
+            return
         payload = {
             "sim_time_s": self.sim_time_s,
             "objects": {

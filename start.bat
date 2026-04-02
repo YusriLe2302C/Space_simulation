@@ -26,7 +26,7 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
-start "ACM - Python Engine" cmd /k "cd /d "%ENGINE%" && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+start "ACM - Python Engine" cmd /k "cd /d "%ENGINE%" && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
 
 :: ── Node backend ─────────────────────────────────────────────────────────────
 echo [2/3] Setting up Node backend...

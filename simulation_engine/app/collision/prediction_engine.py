@@ -10,10 +10,9 @@ from ..spatial.neighbor_search import close_pairs_kdtree
 from ..utils.constants import COLLISION_THRESHOLD_KM
 
 # ── Prediction parameters ─────────────────────────────────────────────────────
-PREDICTION_HORIZON_S  = 86_400   # 24 hours
-PREDICTION_DT_S       = 60.0     # propagation sub-step (1 minute)
-KDTREE_REBUILD_EVERY  = 10       # rebuild KD-tree every N sub-steps
-# Candidate search radius: threshold + generous buffer for orbital curvature
+PREDICTION_HORIZON_S  = 86_400
+PREDICTION_DT_S       = 300.0    # 5-min steps — 288 steps vs 1440
+KDTREE_REBUILD_EVERY  = 20       # rebuild KD-tree every 20 sub-steps
 CANDIDATE_RADIUS_KM   = 50.0
 
 

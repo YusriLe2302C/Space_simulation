@@ -11,7 +11,12 @@
 require("dotenv").config({ path: require("path").join(__dirname, "../../.env") });
 
 const BACKEND_URL = `http://localhost:${process.env.PORT ?? 3000}`;
-const API_KEY     = process.env.ACM_API_KEY ?? "change-this-api-key-before-deploying";
+const API_KEY     = process.env.ACM_API_KEY;
+
+if (!API_KEY) {
+  console.error("[seed] ACM_API_KEY not set in backend/.env");
+  process.exit(1);
+}
 
 // ── TLE API (tle.ivanstanojevic.me — free, no auth required) ─────────────────
 const TLE_API = "https://tle.ivanstanojevic.me/api/tle";

@@ -1,10 +1,31 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, Query
+import os
+from pathlib import Path
+
+# Load .env from simulation_engine root before anything else
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
+
+from fastapi import FastAPI, Query, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .state.global_state import GLOBAL_STATE
 from .state.state_updater import predict_conjunctions, simulate_step
+
+app = FastAPI(title="ACM Simulation Engine", version="2.0.0")
+
+ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
+
+
+def _verify(x_engine_key: str = Header(default=None)):
+    if not ENGINE_SECRET:
+        raise HTTPException(status_code=500, detail="Engine misconfigured — ENGINE_SECRET not set")
+    if x_engine_key is None or x_engine_key != ENGINE_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 class ObjectIn(BaseModel):
@@ -26,8 +47,8 @@ class SimulateOut(BaseModel):
     objects:     list[ObjectOut]
     collisions:  int
     maneuvers:   int
-    reasoning:   dict[str, str]             = Field(default_factory=dict)
-    orbit_paths: dict[str, list[dict]]      = Field(default_factory=dict)
+    reasoning:   dict[str, str]        = Field(default_factory=dict)
+    orbit_paths: dict[str, list[dict]] = Field(default_factory=dict)
 
 
 class ConjunctionOut(BaseModel):
@@ -44,11 +65,13 @@ class PredictOut(BaseModel):
     dt_s:         float
 
 
-app = FastAPI(title="ACM Simulation Engine", version="2.0.0")
-
-
 @app.post("/simulate", response_model=SimulateOut)
-def post_simulate(payload: SimulateIn) -> SimulateOut:
+def post_simulate(
+    payload: SimulateIn,
+    x_engine_key: str = Header(default=None),
+) -> SimulateOut:
+    _verify(x_engine_key)
+
     for obj in payload.objects:
         GLOBAL_STATE.upsert_object(obj_id=obj.id, state=obj.state)
 
@@ -68,16 +91,12 @@ def post_simulate(payload: SimulateIn) -> SimulateOut:
 
 @app.get("/predict", response_model=PredictOut)
 def get_predict(
-    horizon_s: float = Query(default=86_400, gt=0, le=86_400 * 7),
-    dt_s:      float = Query(default=60.0,   gt=0, le=3600),
+    horizon_s:    float = Query(default=86_400, gt=0, le=86_400 * 7),
+    dt_s:         float = Query(default=60.0,   gt=0, le=3600),
+    x_engine_key: str   = Header(default=None),
 ) -> PredictOut:
-    """
-    Run the predictive collision engine over the next `horizon_s` seconds
-    using `dt_s` sub-steps. Returns all predicted conjunctions sorted by
-    time-to-event.
+    _verify(x_engine_key)
 
-    Default: 24-hour horizon, 60-second sub-steps.
-    """
     conjunctions = predict_conjunctions(horizon_s=horizon_s, dt_s=dt_s)
     return PredictOut(
         conjunctions=[ConjunctionOut(**c) for c in conjunctions],
