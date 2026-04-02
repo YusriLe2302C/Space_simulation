@@ -1,0 +1,70 @@
+{
+  "info": {
+    "name": "ACM Backend (Node API)",
+    "_postman_id": "b6f9a9d9-4c5b-4d7e-8e17-5f4c935d1dd1",
+    "description": "Ready-to-run collection for ACM Node backend APIs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" }
+  ],
+  "item": [
+    {
+      "name": "POST /api/telemetry",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/telemetry",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "telemetry"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"timestamp\": \"2026-04-02T12:00:00.000Z\",\n  \"objects\": [\n    {\n      \"id\": \"SAT-001\",\n      \"type\": \"SATELLITE\",\n      \"r\": {\"x\": 7000, \"y\": 0, \"z\": 0},\n      \"v\": {\"x\": 0, \"y\": 7.5, \"z\": 0}\n    },\n    {\n      \"id\": \"DEB-001\",\n      \"type\": \"DEBRIS\",\n      \"r\": {\"x\": 7000.05, \"y\": 0, \"z\": 0},\n      \"v\": {\"x\": 0, \"y\": 7.49, \"z\": 0}\n    }\n  ]\n}\n"
+        }
+      }
+    },
+    {
+      "name": "POST /api/maneuver/schedule",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/maneuver/schedule",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "maneuver", "schedule"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"satelliteId\": \"SAT-001\",\n  \"maneuver_sequence\": [\n    {\n      \"burn_id\": \"BURN-001\",\n      \"burnTime\": \"2026-04-02T12:10:00.000Z\",\n      \"deltaV_vector\": {\"x\": 0.0, \"y\": 5.0, \"z\": 0.0}\n    }\n  ]\n}\n"
+        }
+      }
+    },
+    {
+      "name": "POST /api/simulate/step",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/simulate/step",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "simulate", "step"]
+        },
+        "body": { "mode": "raw", "raw": "{\n  \"step_seconds\": 10\n}\n" }
+      }
+    },
+    {
+      "name": "GET /api/visualization/snapshot",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/visualization/snapshot",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "visualization", "snapshot"]
+        }
+      }
+    }
+  ]
+}
+
