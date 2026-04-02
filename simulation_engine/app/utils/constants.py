@@ -7,21 +7,21 @@ import math
 # - Velocity: km/s
 # - Time: s
 
-EARTH_MU_KM3_S2 = 398600.4418  # km^3 / s^2
-EARTH_RADIUS_KM = 6378.1363  # km
-EARTH_J2 = 1.08262668e-3
+EARTH_MU_KM3_S2 = 398600.4418  # km^3 / s^2  (doc §3.2)
+EARTH_RADIUS_KM = 6378.137     # km           (doc §3.2)
+EARTH_J2        = 1.08263e-3   # dimensionless (doc §3.2)
 
-COLLISION_THRESHOLD_KM = 0.1  # km
+COLLISION_THRESHOLD_KM = 0.1   # km — 100 m   (doc §3.3)
 
-MAX_DV_M_S = 15.0
-MANEUVER_COOLDOWN_S = 600.0
+MAX_DV_M_S         = 15.0      # m/s per burn  (doc §5.1)
+MANEUVER_COOLDOWN_S = 600.0    # s             (doc §5.1)
 
-G0_M_S2 = 9.80665
+G0_M_S2 = 9.80665              # m/s²          (doc §5.1)
 
-# Default propulsion parameters (used for placeholder fuel tracking)
-DEFAULT_ISP_S = 220.0
-DEFAULT_DRY_MASS_KG = 800.0
-DEFAULT_PROPELLANT_KG = 200.0
+# Propulsion constants — identical for every satellite (doc §5.1)
+DEFAULT_DRY_MASS_KG    = 500.0   # kg
+DEFAULT_PROPELLANT_KG  =  50.0   # kg  (wet mass = 550.0 kg)
+DEFAULT_ISP_S          = 300.0   # s
 
 FUEL_GRAVEYARD_THRESHOLD_PCT = 5.0
 

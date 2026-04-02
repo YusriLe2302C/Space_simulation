@@ -43,16 +43,14 @@ async function scheduleManeuverSequence({ runId, satelliteObjectId, sequence }) 
 
   await Maneuver.insertMany(docs, { ordered: false });
 
-  // Compute projected remaining mass using the Tsiolkovsky rocket equation.
-  // Sum all burns in the sequence to get total ΔV, then apply to current mass.
-  const G0 = 9.80665;  // m/s²
-  const ISP_S = 220;   // matches Python engine DEFAULT_ISP_S
-  const DRY_MASS_KG = 800;
-  const INITIAL_MASS_KG = 1000; // dry + default propellant
+  // Tsiolkovsky rocket equation — constants from doc §5.1
+  const isp         = satellite.physical?.ispS    ?? ACM.ISP_S;
+  const initialMass = satellite.physical?.massKg  ?? ACM.WET_MASS_KG;
+  const dryMass     = satellite.physical?.dryMass ?? ACM.DRY_MASS_KG;
 
   const totalDvMs = docs.reduce((sum, d) => sum + (d.dvMagMs ?? 0), 0);
-  const projectedMass = INITIAL_MASS_KG * Math.exp(-totalDvMs / (ISP_S * G0));
-  const projectedMassRemainingKg = Math.max(DRY_MASS_KG, Math.round(projectedMass * 10) / 10);
+  const projectedMass = initialMass * Math.exp(-totalDvMs / (isp * ACM.G0_M_S2));
+  const projectedMassRemainingKg = Math.max(dryMass, Math.round(projectedMass * 10) / 10);
 
   return { projectedMassRemainingKg };
 }

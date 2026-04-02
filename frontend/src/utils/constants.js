@@ -1,10 +1,21 @@
 // Scene scale: 1 unit = 1000 km
-export const EARTH_RADIUS_UNITS = 6.378;        // ~6378 km → 6.378 units
+export const EARTH_RADIUS_UNITS = 6.378137;     // 6378.137 km (doc §3.2)
 export const SCENE_SCALE = 1 / 1000;            // km → scene units
 
-// Risk thresholds (km)
-export const YELLOW_THRESHOLD_KM = 5;
-export const RED_THRESHOLD_KM = 1;
+// Risk thresholds — doc §6.2 Bullseye Plot
+export const YELLOW_THRESHOLD_KM = 5;           // km — Warning
+export const RED_THRESHOLD_KM    = 1;           // km — Critical
+export const COLLISION_THRESHOLD_KM = 0.1;      // km = 100 m (doc §3.3)
+
+// Propulsion — doc §5.1
+export const DRY_MASS_KG       = 500.0;         // kg
+export const PROPELLANT_KG     =  50.0;         // kg
+export const WET_MASS_KG       = 550.0;         // kg
+export const ISP_S             = 300.0;         // s
+export const MAX_DV_MS         =  15.0;         // m/s per burn
+export const MANEUVER_COOLDOWN_SEC = 600;       // s (doc §5.1)
+export const STATION_BOX_KM    =  10.0;         // km spherical box (doc §5.2)
+export const COMM_DELAY_SEC    =  10;           // s signal latency (doc §5.4)
 
 // Fuel warning (%)
 export const FUEL_WARNING_PCT = 15;
