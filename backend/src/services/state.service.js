@@ -57,15 +57,14 @@ async function upsertTelemetryObjects({ timestamp, objects, runId }) {
 }
 
 async function getObjectsForSimulation({ runId, limit = 20000 }) {
-  // Fix: filter by runId so multi-run simulations are isolated.
-  // Without this all satellites/debris from all runs are mixed together.
   const [satellites, debris] = await Promise.all([
     Satellite.find({
       deletedAt: { $exists: false },
       "latestEci.r.x": { $exists: true },
       "latestEci.runId": runId,
     })
-      .select({ objectId: 1, latestEci: 1 })
+      .select({ objectId: 1, "latestEci.r": 1, "latestEci.v": 1 })
+      .hint({ "latestEci.runId": 1 })
       .limit(limit)
       .lean(),
     Debris.find({
@@ -73,7 +72,8 @@ async function getObjectsForSimulation({ runId, limit = 20000 }) {
       "latestEci.r.x": { $exists: true },
       "latestEci.runId": runId,
     })
-      .select({ objectId: 1, latestEci: 1 })
+      .select({ objectId: 1, "latestEci.r": 1, "latestEci.v": 1 })
+      .hint({ "latestEci.runId": 1 })
       .limit(limit)
       .lean(),
   ]);
@@ -129,15 +129,29 @@ async function applySimulationResults({ timestampIso, runId, objects, typeById }
 
     const type = typeById?.get(obj.id);
     if (type === "SATELLITE") {
-      satOps.push({ updateOne: { filter: { objectId: obj.id }, update } });
+      // Compute fuel_kg from current_mass if engine returns it, else keep existing
+      const fuelUpdate = typeof obj.current_mass_kg === "number"
+        ? { fuel_kg: Math.max(0, obj.current_mass_kg - 500.0) }  // current - dry_mass
+        : {};
+      satOps.push({ updateOne: { filter: { objectId: obj.id }, update: {
+        $set: { lastTelemetryAt: ts, latestEci: { timestamp: ts, runId, r, v }, ...fuelUpdate },
+      } } });
     } else if (type === "DEBRIS") {
       debrisOps.push({ updateOne: { filter: { objectId: obj.id }, update } });
     }
   }
 
+  // Chunk bulkWrite into 1000-op batches to stay well under MongoDB's 16MB BSON limit
+  const CHUNK = 1000;
+  const chunkWrite = async (Model, ops) => {
+    for (let i = 0; i < ops.length; i += CHUNK) {
+      await Model.bulkWrite(ops.slice(i, i + CHUNK), { ordered: false });
+    }
+  };
+
   await Promise.all([
-    satOps.length ? Satellite.bulkWrite(satOps, { ordered: false }) : null,
-    debrisOps.length ? Debris.bulkWrite(debrisOps, { ordered: false }) : null,
+    satOps.length   ? chunkWrite(Satellite, satOps)   : null,
+    debrisOps.length ? chunkWrite(Debris,   debrisOps) : null,
   ]);
 
   await SimulationState.updateOne(
@@ -154,11 +168,13 @@ async function getSnapshot({ runId, satelliteLimit = 10000, debrisLimit = 10000 
   const timestamp = sim?.timestamp ? new Date(sim.timestamp).toISOString() : new Date().toISOString();
 
   const [satellites, debris] = await Promise.all([
-    Satellite.find({ deletedAt: { $exists: false } })
+    Satellite.find({ deletedAt: { $exists: false }, "latestEci.runId": runId })
+      .select({ objectId: 1, name: 1, "latestEci.r": 1, fuel_kg: 1, status: 1 })
       .sort({ lastTelemetryAt: -1 })
       .limit(satelliteLimit)
       .lean(),
-    Debris.find({ deletedAt: { $exists: false } })
+    Debris.find({ deletedAt: { $exists: false }, "latestEci.runId": runId })
+      .select({ objectId: 1, "latestEci.r": 1 })
       .sort({ lastTelemetryAt: -1 })
       .limit(debrisLimit)
       .lean(),

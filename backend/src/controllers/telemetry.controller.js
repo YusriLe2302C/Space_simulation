@@ -1,4 +1,5 @@
 const { upsertTelemetryObjects } = require("../services/state.service");
+const CollisionEvent = require("../models/CollisionEvent");
 
 const MAX_OBJECTS = 5000;
 
@@ -13,13 +14,19 @@ async function postTelemetry(req, res, next) {
       return res.status(413).json({ error: `Exceeds max ${MAX_OBJECTS} objects per request` });
     }
 
-    const runId = req.app.locals.runId;
+    const runId = req.runId;
     await upsertTelemetryObjects({ timestamp, objects, runId });
+
+    // Count active CDM warnings: detected conjunctions not yet mitigated
+    const active_cdm_warnings = await CollisionEvent.countDocuments({
+      runId,
+      status: { $in: ["detected", "acknowledged"] },
+    });
 
     res.json({
       status: "ACK",
       processed_count: objects.length,
-      active_cdm_warnings: 0,
+      active_cdm_warnings,
     });
   } catch (err) {
     next(err);
@@ -27,4 +34,3 @@ async function postTelemetry(req, res, next) {
 }
 
 module.exports = { postTelemetry };
-

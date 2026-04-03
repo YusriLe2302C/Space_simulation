@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Load .env from simulation_engine root before anything else
@@ -16,14 +18,21 @@ from pydantic import BaseModel, Field
 from .state.global_state import GLOBAL_STATE
 from .state.state_updater import predict_conjunctions, simulate_step
 
-app = FastAPI(title="ACM Simulation Engine", version="2.0.0")
-
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
+_SIM_LOCK     = asyncio.Lock()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if not ENGINE_SECRET:
+        raise RuntimeError("ENGINE_SECRET env var is not set — refusing to start")
+    yield
+
+
+app = FastAPI(title="ACM Simulation Engine", version="2.0.0", lifespan=lifespan)
 
 
 def _verify(x_engine_key: str = Header(default=None)):
-    if not ENGINE_SECRET:
-        raise HTTPException(status_code=500, detail="Engine misconfigured — ENGINE_SECRET not set")
     if x_engine_key is None or x_engine_key != ENGINE_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
 
@@ -66,16 +75,16 @@ class PredictOut(BaseModel):
 
 
 @app.post("/simulate", response_model=SimulateOut)
-def post_simulate(
+async def post_simulate(
     payload: SimulateIn,
     x_engine_key: str = Header(default=None),
 ) -> SimulateOut:
     _verify(x_engine_key)
 
-    for obj in payload.objects:
-        GLOBAL_STATE.upsert_object(obj_id=obj.id, state=obj.state)
-
-    result = simulate_step(step_seconds=float(payload.step_seconds))
+    async with _SIM_LOCK:
+        for obj in payload.objects:
+            GLOBAL_STATE.upsert_object(obj_id=obj.id, state=obj.state)
+        result = simulate_step(step_seconds=float(payload.step_seconds))
 
     return SimulateOut(
         objects=[
@@ -90,14 +99,23 @@ def post_simulate(
 
 
 @app.get("/predict", response_model=PredictOut)
-def get_predict(
+async def get_predict(
     horizon_s:    float = Query(default=86_400, gt=0, le=86_400 * 7),
     dt_s:         float = Query(default=60.0,   gt=0, le=3600),
     x_engine_key: str   = Header(default=None),
 ) -> PredictOut:
     _verify(x_engine_key)
 
-    conjunctions = predict_conjunctions(horizon_s=horizon_s, dt_s=dt_s)
+    # Take a snapshot of current state under the lock, then release.
+    # The prediction itself runs outside the lock so /simulate is never blocked.
+    async with _SIM_LOCK:
+        ids, states = GLOBAL_STATE.get_ids_and_states()
+        states_copy = states.copy() if states.size else states
+
+    from .state.state_updater import predict_conjunctions_24h_from_snapshot
+    conjunctions = predict_conjunctions_24h_from_snapshot(
+        ids=ids, states=states_copy, horizon_s=horizon_s, dt_s=dt_s
+    )
     return PredictOut(
         conjunctions=[ConjunctionOut(**c) for c in conjunctions],
         horizon_s=horizon_s,

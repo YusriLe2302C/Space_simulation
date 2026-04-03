@@ -5,15 +5,14 @@ const DEFAULT_RETRIES    = 2;
 
 // ── Token store ───────────────────────────────────────────────────────────────
 // JWT held in memory only — never localStorage (avoids XSS token theft).
-// Fetched once on first API call, reused until the page reloads or a
-// 401/403 response forces a refresh.
-let _token      = null;
-let _tokenFetch = null;   // in-flight promise — prevents duplicate /auth/token calls
+let _token               = null;
+let _tokenExpiry         = 0;
+let _tokenFetch          = null;
+let _tokenRefreshCount   = 0;
+const MAX_TOKEN_REFRESHES = 2;
 
 async function getToken() {
-  if (_token) return _token;
-
-  // If a fetch is already in flight, wait for it instead of firing another
+  if (_token && Date.now() < _tokenExpiry - 60_000) return _token;
   if (_tokenFetch) return _tokenFetch;
 
   _tokenFetch = fetch(`${API_BASE_URL}/auth/token`, {
@@ -28,8 +27,11 @@ async function getToken() {
       return res.json();
     })
     .then((data) => {
-      _token      = data.token;
-      _tokenFetch = null;
+      _token             = data.token;
+      const hours        = parseFloat(data.expires_in ?? "8") || 8;
+      _tokenExpiry       = Date.now() + hours * 3_600_000;
+      _tokenFetch        = null;
+      _tokenRefreshCount = 0;
       return _token;
     })
     .catch((err) => {
@@ -82,11 +84,12 @@ async function apiFetch(
       });
 
       if (!res.ok) {
-        // Token expired or invalid — clear cache, fetch fresh, retry once
-        if ((res.status === 401 || res.status === 403) && attempt === 1) {
-          _token = null;
-          token  = await getToken();
-          attempt = 0;   // reset counter so the retry is treated as attempt 1
+        // Token expired or invalid — refresh once, capped to prevent infinite loop
+        if ((res.status === 401 || res.status === 403) && _tokenRefreshCount < MAX_TOKEN_REFRESHES) {
+          _tokenRefreshCount++;
+          _token       = null;
+          _tokenExpiry = 0;
+          token        = await getToken();
           continue;
         }
 

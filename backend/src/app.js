@@ -44,13 +44,20 @@ function createApp({ logger, corsOrigin, runId }) {
   app.set("trust proxy", 1);  // correct IP behind reverse proxy
   app.disable("x-powered-by");
 
-  // Request timeout — prevents resource exhaustion
+  // Hard request deadline — prevents slow-client resource exhaustion
   app.use((req, res, next) => {
-    res.setTimeout(15000, () => {
-      res.status(503).json({ error: "Request timeout" });
-    });
+    const timer = setTimeout(() => {
+      if (!res.headersSent) res.status(503).json({ error: "Request timeout" });
+    }, 15000);
+    res.on("finish", () => clearTimeout(timer));
+    res.on("close",  () => clearTimeout(timer));
     next();
   });
+
+  // Build dynamic connectSrc from corsOrigin so non-localhost deployments work
+  const wsSources = corsOrigin.split(",").map((o) =>
+    o.trim().replace(/^http:/, "ws:").replace(/^https:/, "wss:")
+  );
 
   app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -59,7 +66,7 @@ function createApp({ logger, corsOrigin, runId }) {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc:  ["'self'"],
-        connectSrc: ["'self'", "ws://localhost:3000", "wss://localhost:3000"],
+        connectSrc: ["'self'", ...wsSources],
         imgSrc:     ["'self'", "data:"],
       },
     },
@@ -79,6 +86,15 @@ function createApp({ logger, corsOrigin, runId }) {
   const api = express.Router();
   api.use(apiLimiter);
   api.use(validateRunId);
+  // Per-runId rate limit — layered on top of IP limit
+  api.use(rateLimit({
+    windowMs:        60 * 1000,
+    max:             200,
+    standardHeaders: true,
+    legacyHeaders:   false,
+    keyGenerator:    (req) => req.headers["x-run-id"] ?? req.ip,
+    message:         { error: "Per-run rate limit exceeded" },
+  }));
   api.use(requireAuth);
   api.use("/telemetry", telemetryLimiter, telemetryRoutes);
   api.use(simulationRoutes);

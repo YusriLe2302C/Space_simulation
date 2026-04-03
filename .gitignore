@@ -19,6 +19,10 @@ backend/.env
 frontend/.env
 simulation_engine/.env
 
+# Simulation engine runtime snapshots
+simulation_engine/data/acm_global_state.json
+simulation_engine/data/acm_global_state.tmp
+
 # OS
 .DS_Store
 Thumbs.db

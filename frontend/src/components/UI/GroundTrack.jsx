@@ -5,12 +5,42 @@ import { panel, sectionLabel, TOKEN } from "./Dashboard";
 
 const W = 400;
 const H = 200;
+const TRAIL_MAX = 60; // store up to 60 historical positions per satellite (~90 min at 1 pos/90s)
+
+// Historical trail store — plain object, not React state (no re-render overhead)
+const _trailStore = {}; // { [satId]: [{lon, lat}] }
+
+function updateTrails(sats) {
+  for (const sat of sats) {
+    if (sat.lon == null || sat.lat == null) continue;
+    if (!_trailStore[sat.id]) _trailStore[sat.id] = [];
+    const trail = _trailStore[sat.id];
+    const last = trail[trail.length - 1];
+    // Only append if position changed meaningfully
+    if (!last || Math.abs(last.lon - sat.lon) > 0.01 || Math.abs(last.lat - sat.lat) > 0.01) {
+      trail.push({ lon: sat.lon, lat: sat.lat });
+      if (trail.length > TRAIL_MAX) trail.shift();
+    }
+  }
+}
+
+// True Web Mercator projection (EPSG:3857)
+// Latitude is clamped to ±85.051129° (standard Mercator limit)
+const MERC_LAT_MAX = 85.051129;
+
+function mercatorY(lat) {
+  const phi = Math.max(-MERC_LAT_MAX, Math.min(MERC_LAT_MAX, lat)) * (Math.PI / 180);
+  return Math.log(Math.tan(Math.PI / 4 + phi / 2));
+}
+
+const _MERC_TOP = mercatorY(MERC_LAT_MAX);
+const _MERC_BOT = mercatorY(-MERC_LAT_MAX);
+const _MERC_RNG = _MERC_TOP - _MERC_BOT;
 
 function lonLatToXY(lon, lat) {
-  return [
-    ((lon + 180) / 360) * W,
-    ((90 - lat) / 180) * H,
-  ];
+  const x = ((lon + 180) / 360) * W;
+  const y = (1 - (mercatorY(lat) - _MERC_BOT) / _MERC_RNG) * H;
+  return [x, y];
 }
 
 // Approximate sun longitude: moves 360° per 86400 seconds
@@ -41,22 +71,23 @@ const GroundTrack = memo(function GroundTrack() {
       ctx.fillStyle = "#050f1a";
       ctx.fillRect(0, 0, W, H);
 
-      // Grid
+      // Grid — longitude lines evenly spaced, latitude lines via Mercator y
       ctx.strokeStyle = "rgba(0,170,255,0.08)";
       ctx.lineWidth = 0.5;
       for (let lon = -180; lon <= 180; lon += 30) {
         const x = ((lon + 180) / 360) * W;
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
       }
-      for (let lat = -90; lat <= 90; lat += 30) {
-        const y = ((90 - lat) / 180) * H;
+      for (let lat = -60; lat <= 60; lat += 30) {
+        const [, y] = lonLatToXY(0, lat);
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
       }
 
-      // Equator label
+      // Equator label — use Mercator y for lat=0
+      const [, equatorY] = lonLatToXY(0, 0);
       ctx.fillStyle = "rgba(0,170,255,0.3)";
       ctx.font = "8px monospace";
-      ctx.fillText("0°", 2, H / 2 - 2);
+      ctx.fillText("0°", 2, equatorY - 2);
 
       // Terminator (approximate day/night gradient)
       const sLon  = sunLon(timestamp);
@@ -70,6 +101,29 @@ const GroundTrack = memo(function GroundTrack() {
       ctx.fillRect(0, 0, W, H);
 
       const sats = positionStore.satellites ?? [];
+
+      // Update historical trails
+      updateTrails(sats);
+
+      // Historical trails (solid dim line)
+      for (const sat of sats) {
+        const trail = _trailStore[sat.id];
+        if (!trail || trail.length < 2) continue;
+        ctx.strokeStyle = "rgba(0,170,255,0.35)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let prevX = null;
+        for (const pt of trail) {
+          const [x, y] = lonLatToXY(pt.lon, pt.lat);
+          if (prevX !== null && Math.abs(x - prevX) > W * 0.4) {
+            ctx.stroke(); ctx.beginPath();
+          }
+          prevX === null ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          prevX = x;
+        }
+        ctx.stroke();
+      }
 
       // Orbit paths
       for (const sat of sats) {
@@ -138,7 +192,7 @@ const GroundTrack = memo(function GroundTrack() {
         <span>🌍</span>
         <span>GROUND TRACK</span>
         <span style={{ marginLeft: "auto", color: TOKEN.textDim, fontSize: "9px" }}>
-          equirectangular · 90 min orbit
+          Mercator · trail + predicted
         </span>
       </div>
       <canvas

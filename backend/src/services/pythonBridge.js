@@ -98,8 +98,6 @@ async function simulateStepHttp({
   }
 }
 
-module.exports = { simulateStepHttp, predictHttp };
-
 async function predictHttp({ pythonEngineUrl, horizonS = 86400, dtS = 300, timeoutMs = 30000 }) {
   const url    = `${pythonEngineUrl.replace(/\/+$/, "")}/predict?horizon_s=${horizonS}&dt_s=${dtS}`;
   const secret = process.env.ENGINE_SECRET;
@@ -116,3 +114,5 @@ async function predictHttp({ pythonEngineUrl, horizonS = 86400, dtS = 300, timeo
     clearTimeout(timeout);
   }
 }
+
+module.exports = { simulateStepHttp, predictHttp };

@@ -8,11 +8,12 @@ const { createLogger } = require("./src/utils/logger");
 const { createApp }    = require("./src/app");
 const { initSocket }   = require("./src/services/socket.service");
 
-const EARTH_RADIUS_KM = 6378.1363;
-const RAD2DEG         = 180 / Math.PI;
+const EARTH_RADIUS_KM   = 6378.137;
+const RAD2DEG           = 180 / Math.PI;
 const STEP_SECONDS      = 60;
 const STEP_INTERVAL_MS  = 8000;
 const PYTHON_TIMEOUT_MS = 25000;
+const MAX_BROADCAST_SATS = 500;  // cap satellite objects per broadcast to bound payload size
 
 function eciToGeo([x, y, z]) {
   const rMag = Math.hypot(x, y, z);
@@ -71,6 +72,13 @@ async function main() {
   const { simulateStepHttp } = require("./src/services/pythonBridge");
   const { broadcast }        = require("./src/services/socket.service");
 
+  // ── Orbit path cache — only rebroadcast when paths actually change ──────
+  // Orbit paths are stable for ~90 min. Sending 60-point paths every 8s
+  // wastes ~95% of WebSocket bandwidth. Recompute only every ORBIT_REFRESH ticks.
+  const ORBIT_REFRESH_TICKS = 60;  // ~8 min at 8s/tick
+  let _orbitTick   = 0;
+  let _orbitCache  = {};
+
   // ── Single simulation tick ──────────────────────────────────────────────────
   async function runSimStep() {
     const { objects, typeById, nameById } = await getObjectsForSimulation({ runId: env.runId });
@@ -97,17 +105,29 @@ async function main() {
 
     const satObjects = engine.objects
       .filter((o) => typeById.get(o.id) === "SATELLITE" && o.state?.length >= 3)
+      .slice(0, MAX_BROADCAST_SATS)
       .map((o) => {
         const { lat, lon, alt } = eciToGeo(o.state);
-        return { id: o.id, name: nameById?.get(o.id) ?? o.id, lat, lon, alt, orbit_path: engine.orbit_paths[o.id] ?? [] };
+        // hasLOS: check if this satellite's maneuver was flagged as no-LOS
+        // The engine returns reasoning per object; "pre_upload" in reasoning = no LOS at schedule time
+        const reasoning = engine.reasoning?.[o.id] ?? "";
+        const hasLOS = !reasoning.includes("pre_upload");
+        return { id: o.id, name: nameById?.get(o.id) ?? o.id, lat, lon, alt, hasLOS };
       });
 
+    // Only include orbit_paths every ORBIT_REFRESH_TICKS ticks
+    _orbitTick++;
+    const shouldRefreshOrbits = _orbitTick % ORBIT_REFRESH_TICKS === 1;
+    if (shouldRefreshOrbits && Object.keys(engine.orbit_paths).length) {
+      _orbitCache = engine.orbit_paths;
+    }
+
     broadcast("state_update", {
-      timestamp:          sim.newTimestamp,
-      collisions:         engine.collisions,
-      maneuvers_executed: engine.maneuvers,
-      objects:            satObjects,
-      orbit_paths:        engine.orbit_paths,
+      timestamp:           sim.newTimestamp,
+      collisions_detected: engine.collisions,
+      maneuvers_executed:  engine.maneuvers,
+      objects:             satObjects,
+      orbit_paths:         shouldRefreshOrbits ? _orbitCache : undefined,
     }, env.runId);
   }
 

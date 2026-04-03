@@ -3,10 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..collision.predictor import predict_close_approaches
-from ..collision.risk_assessment import (
-    collision_count,
-    enrich_close_approaches_with_pc,
-)
+from ..collision.risk_assessment import enrich_close_approaches_with_pc
 from ..collision.prediction_engine import predict_conjunctions_24h
 from ..communication.ground_station import COMM_LAYER, apply_comm_delay
 from ..decision.optimizer import plan_optimised_cola
@@ -70,29 +67,34 @@ def predict_conjunctions(
     horizon_s: float = 86_400,
     dt_s: float = 60.0,
 ) -> list[dict]:
-    """
-    Run the 24-hour predictive engine against current GLOBAL_STATE.
-    Returns a list of future conjunctions sorted by time_to_event_s.
-    """
     ids, states = GLOBAL_STATE.get_ids_and_states()
     if states.shape[0] < 2:
         return []
-
     conjunctions = predict_conjunctions_24h(
-        ids=ids,
-        states_km_kms=states,
-        horizon_s=horizon_s,
-        dt_s=dt_s,
+        ids=ids, states_km_kms=states, horizon_s=horizon_s, dt_s=dt_s,
     )
-
     return [
-        {
-            "a":                c.a,
-            "b":                c.b,
-            "tca_s":            c.tca_s,
-            "miss_distance_km": c.miss_distance_km,
-            "time_to_event_s":  c.time_to_event_s,
-        }
+        {"a": c.a, "b": c.b, "tca_s": c.tca_s,
+         "miss_distance_km": c.miss_distance_km, "time_to_event_s": c.time_to_event_s}
+        for c in conjunctions
+    ]
+
+
+def predict_conjunctions_24h_from_snapshot(
+    ids: list[str],
+    states: np.ndarray,
+    horizon_s: float = 86_400,
+    dt_s: float = 60.0,
+) -> list[dict]:
+    """Run prediction on a pre-copied state snapshot (no lock needed)."""
+    if states.shape[0] < 2:
+        return []
+    conjunctions = predict_conjunctions_24h(
+        ids=ids, states_km_kms=states, horizon_s=horizon_s, dt_s=dt_s,
+    )
+    return [
+        {"a": c.a, "b": c.b, "tca_s": c.tca_s,
+         "miss_distance_km": c.miss_distance_km, "time_to_event_s": c.time_to_event_s}
         for c in conjunctions
     ]
 
@@ -155,7 +157,7 @@ def simulate_step(step_seconds: float) -> dict:
         threshold_km=COLLISION_THRESHOLD_KM,
     )
 
-    states_by_id = {obj_id: states[i] for i, obj_id in enumerate(ids)}
+    states_by_id = dict(zip(ids, states))  # O(N) but single pass, no enumerate
 
     close_approaches = enrich_close_approaches_with_pc(
         close_approaches,
@@ -199,18 +201,40 @@ def simulate_step(step_seconds: float) -> dict:
     desired_dv = {**dv_sk_by_id, **dv_cola_by_id}
 
     # ── Communication layer: gate on LOS, apply 10-second delay ──────────
-    # Each desired ΔV is submitted to the comm layer.
-    # It is only queued if the satellite currently has LOS to a ground station.
-    # Commands queued in previous steps that have waited >= COMM_DELAY_S
-    # are returned as due and executed this step.
+    # For high-risk conjunctions (Pc >= 1e-4), use pre_upload_if_upcoming_blackout
+    # so the command survives a blackout window before TCA.
+    # For routine burns (station-keeping), use normal schedule_if_visible.
+    tca_by_id: dict[str, float] = {}
+    for ca in close_approaches:
+        if getattr(ca, "pc", 0) >= 1e-4:
+            for oid in (ca.a, ca.b):
+                if oid not in tca_by_id or ca.tca_s < tca_by_id[oid]:
+                    tca_by_id[oid] = GLOBAL_STATE.sim_time_s + ca.tca_s
+
     for obj_id, dv in desired_dv.items():
         sat_pos = states_by_id[obj_id][0:3]
-        apply_comm_delay(
-            obj_id=obj_id,
-            sat_pos_km=sat_pos,
-            dv_km_s=dv,
-            current_time_s=GLOBAL_STATE.sim_time_s,
-        )
+        sat_vel = states_by_id[obj_id][3:6]
+        tca_s   = tca_by_id.get(obj_id)
+        if tca_s is not None:
+            uploaded = COMM_LAYER.pre_upload_if_upcoming_blackout(
+                obj_id=obj_id,
+                sat_pos_km=sat_pos,
+                sat_vel_km_s=sat_vel,
+                dv_km_s=dv,
+                current_time_s=GLOBAL_STATE.sim_time_s,
+                tca_s=tca_s,
+            )
+            # Tag reasoning so backend can detect no-LOS pre-upload
+            if uploaded and not COMM_LAYER.satellite_in_los(sat_pos, GLOBAL_STATE.sim_time_s):
+                existing = maneuver_reasoning.get(obj_id, "")
+                maneuver_reasoning[obj_id] = existing + " [pre_upload:no_los]"
+        else:
+            apply_comm_delay(
+                obj_id=obj_id,
+                sat_pos_km=sat_pos,
+                dv_km_s=dv,
+                current_time_s=GLOBAL_STATE.sim_time_s,
+            )
 
     # Collect commands that have completed their delay window
     due_commands = COMM_LAYER.pop_due_commands(GLOBAL_STATE.sim_time_s)
@@ -228,7 +252,14 @@ def simulate_step(step_seconds: float) -> dict:
 
     GLOBAL_STATE.sim_time_s += step_seconds
 
-    collisions = collision_count(close_approaches)
+    # Re-check distances in the propagated state so maneuvers that successfully
+    # moved objects apart are not counted as collisions.
+    propagated_positions = propagated[:, 0:3]
+    from ..spatial.neighbor_search import close_pairs_kdtree
+    actual_collision_pairs = close_pairs_kdtree(
+        propagated_positions, threshold_km=COLLISION_THRESHOLD_KM
+    )
+    collisions = len(actual_collision_pairs)
 
     # Build orbit paths for controllable satellites — batched for speed.
     # All satellite states propagated together in one RK4 batch per step.

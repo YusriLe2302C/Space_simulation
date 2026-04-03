@@ -2,190 +2,212 @@ import { memo, useState, useCallback, useMemo } from "react";
 import useSimulationStore from "../../store/simulationStore";
 import { panel, sectionLabel, TOKEN } from "./Dashboard";
 
-// ── Event type config ─────────────────────────────────────────────────────────
-const EVENT_TYPE = {
-  cola:            { label: "COLA",  color: "#ff9922", bg: "rgba(255,140,0,0.12)"  },
-  station_keeping: { label: "SK",    color: "#44aaff", bg: "rgba(40,140,255,0.1)"  },
-  graveyard:       { label: "GY",    color: "#cc2200", bg: "rgba(180,20,0,0.15)"   },
-  manual:          { label: "MAN",   color: "#cc88ff", bg: "rgba(160,80,255,0.1)"  },
-  collision:       { label: "COLL",  color: "#ff3322", bg: "rgba(255,40,20,0.12)"  },
+const COOLDOWN_S    = 600;
+const GANTT_W       = 260;
+const ROW_H         = 18;
+const LABEL_W       = 60;
+const INNER_W       = GANTT_W - LABEL_W;
+const WINDOW_S      = 7200;   // 2-hour view window
+
+const EVENT_COLOR = {
+  cola:            "#ff9922",
+  station_keeping: "#44aaff",
+  graveyard:       "#cc2200",
+  manual:          "#cc88ff",
 };
 
-const ALL_FILTER = "ALL";
-
-function typeConfig(type) {
-  return EVENT_TYPE[type] ?? { label: (type ?? "EVT").toUpperCase().slice(0, 4), color: "#778899", bg: "rgba(100,120,140,0.1)" };
+function typeColor(type) {
+  return EVENT_COLOR[type] ?? "#778899";
 }
 
-// ── Filter tab button ─────────────────────────────────────────────────────────
-const FilterTab = memo(function FilterTab({ label, active, color, count, onClick }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        background:   active ? `rgba(${hexToRgb(color)},0.18)` : "transparent",
-        border:       active ? `1px solid ${color}44` : "1px solid transparent",
-        borderRadius: "3px",
-        color:        active ? color : TOKEN.textDim,
-        cursor:       "pointer",
-        fontSize:     "9px",
-        fontWeight:   "700",
-        fontFamily:   TOKEN.fontMono,
-        padding:      "2px 6px",
-        letterSpacing: "0.05em",
-        transition:   "all 0.15s",
-      }}
-    >
-      {label}{count != null ? ` (${count})` : ""}
-    </button>
-  );
-});
+const selectEvents    = (s) => s.events;
+const selectTimestamp = (s) => s.timestamp;
 
-// Minimal hex→rgb for rgba() usage in filter tabs
-function hexToRgb(hex) {
-  const n = parseInt(hex.replace("#", ""), 16);
-  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
-}
+const GanttTimeline = memo(function GanttTimeline() {
+  const events    = useSimulationStore(selectEvents);
+  const timestamp = useSimulationStore(selectTimestamp);
+  const [filter, setFilter] = useState(null);
 
-// ── Single event row ──────────────────────────────────────────────────────────
-const EventRow = memo(function EventRow({ event }) {
-  const cfg  = typeConfig(event.type);
-  const time = event.timestamp
-    ? new Date(event.timestamp).toISOString().slice(11, 19)
-    : null;
+  const nowMs = timestamp ? new Date(timestamp).getTime() : Date.now();
+  const windowStartMs = nowMs - WINDOW_S * 500;   // center now in window
+  const windowEndMs   = windowStartMs + WINDOW_S * 1000;
 
-  return (
-    <div style={{
-      padding:      "5px 6px",
-      borderRadius: "3px",
-      background:   cfg.bg,
-      marginBottom: "4px",
-    }}>
-      {/* Top row: badge + satellite + time */}
-      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-        <span style={{
-          color:        cfg.color,
-          fontSize:     "8px",
-          fontWeight:   "700",
-          minWidth:     "30px",
-          letterSpacing: "0.04em",
-          flexShrink:   0,
-        }}>
-          {cfg.label}
-        </span>
-        <span style={{
-          color:        TOKEN.text,
-          fontSize:     "10px",
-          flex:         1,
-          overflow:     "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace:   "nowrap",
-        }}>
-          {event.satelliteId ?? "—"}
-        </span>
-        {time && (
-          <span style={{
-            color:              TOKEN.textDim,
-            fontSize:           "9px",
-            flexShrink:         0,
-            fontVariantNumeric: "tabular-nums",
-          }}>
-            {time}
-          </span>
-        )}
-      </div>
-
-      {/* Reasoning row — only shown when backend provides it */}
-      {event.reasoning && (
-        <div style={{
-          marginTop:  "3px",
-          fontSize:   "9px",
-          color:      TOKEN.textDim,
-          wordBreak:  "break-all",
-          lineHeight: "1.4",
-        }}>
-          {event.reasoning}
-        </div>
-      )}
-    </div>
-  );
-});
-
-// ── Selectors ─────────────────────────────────────────────────────────────────
-const selectEvents = (s) => s.events;
-
-// ── Timeline ──────────────────────────────────────────────────────────────────
-const Timeline = memo(function Timeline() {
-  const events = useSimulationStore(selectEvents);
-  const [filter, setFilter] = useState(ALL_FILTER);
-
-  // Derive available types and counts from current events
-  const typeCounts = useMemo(() => {
-    const counts = {};
-    for (const e of events) {
-      counts[e.type] = (counts[e.type] ?? 0) + 1;
+  // Group events by satelliteId
+  const bySat = useMemo(() => {
+    const map = new Map();
+    const src = filter ? events.filter((e) => e.type === filter) : events;
+    for (const e of src) {
+      const sid = e.satelliteId ?? "unknown";
+      if (!map.has(sid)) map.set(sid, []);
+      map.get(sid).push(e);
     }
-    return counts;
-  }, [events]);
+    return map;
+  }, [events, filter]);
 
-  const filtered = useMemo(
-    () => filter === ALL_FILTER ? events : events.filter((e) => e.type === filter),
-    [events, filter],
-  );
+  const satIds = [...bySat.keys()].slice(0, 8);  // max 8 rows
 
-  const onFilter = useCallback((type) => setFilter(type), []);
+  const toX = (ms) =>
+    LABEL_W + ((ms - windowStartMs) / (windowEndMs - windowStartMs)) * INNER_W;
 
-  const availableTypes = Object.keys(typeCounts);
+  const svgH = Math.max(40, satIds.length * ROW_H + 20);
+
+  // Tick marks every 30 min
+  const ticks = [];
+  for (let t = windowStartMs; t <= windowEndMs; t += 1800_000) {
+    ticks.push(t);
+  }
+
+  const types = [...new Set(events.map((e) => e.type))];
 
   return (
-    <div style={panel({ height: "220px", display: "flex", flexDirection: "column" })}>
-      {/* Header */}
-      <div style={{ ...sectionLabel(), flexShrink: 0, marginBottom: "6px" }}>
-        <span>📋</span>
-        <span>EVENT LOG</span>
-        <span style={{ marginLeft: "auto", color: TOKEN.textDim, fontSize: "9px", fontWeight: "400" }}>
-          {events.length} events
-        </span>
+    <div style={panel({ padding: "8px 10px" })}>
+      <div style={{ ...sectionLabel(), marginBottom: "4px" }}>
+        <span>📅</span>
+        <span>MANEUVER GANTT</span>
+        <span style={{ marginLeft: "auto", color: TOKEN.textDim, fontSize: "9px" }}>±1h window</span>
       </div>
 
-      {/* Filter tabs — only shown when there are multiple event types */}
-      {availableTypes.length > 1 && (
-        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "6px", flexShrink: 0 }}>
-          <FilterTab
-            label="ALL"
-            active={filter === ALL_FILTER}
-            color={TOKEN.accent}
-            count={events.length}
-            onClick={() => onFilter(ALL_FILTER)}
-          />
-          {availableTypes.map((type) => {
-            const cfg = typeConfig(type);
-            return (
-              <FilterTab
-                key={type}
-                label={cfg.label}
-                active={filter === type}
-                color={cfg.color}
-                count={typeCounts[type]}
-                onClick={() => onFilter(type)}
-              />
-            );
-          })}
+      {/* Filter tabs */}
+      {types.length > 1 && (
+        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "5px" }}>
+          <button onClick={() => setFilter(null)} style={tabStyle(filter === null, TOKEN.accent)}>ALL</button>
+          {types.map((t) => (
+            <button key={t} onClick={() => setFilter(t)} style={tabStyle(filter === t, typeColor(t))}>
+              {t.toUpperCase().slice(0, 4)}
+            </button>
+          ))}
         </div>
       )}
 
-      {/* Event list */}
-      <div style={{ overflowY: "auto", flex: 1 }}>
-        {filtered.length === 0 ? (
-          <div style={{ color: TOKEN.textMuted, fontSize: "10px", padding: "2px 0" }}>
-            {events.length === 0 ? "Awaiting events…" : "No events match filter"}
-          </div>
-        ) : (
-          filtered.map((e, i) => <EventRow key={e.id ?? i} event={e} />)
+      <svg width={GANTT_W} height={svgH} style={{ display: "block", overflow: "visible" }}>
+        {/* Time axis ticks */}
+        {ticks.map((t) => {
+          const x = toX(t);
+          if (x < LABEL_W || x > GANTT_W) return null;
+          const label = new Date(t).toISOString().slice(11, 16);
+          return (
+            <g key={t}>
+              <line x1={x} y1={0} x2={x} y2={svgH - 12}
+                stroke="rgba(0,170,255,0.1)" strokeWidth={0.5} />
+              <text x={x} y={svgH - 2} fill={TOKEN.textDim}
+                fontSize="6" textAnchor="middle" fontFamily="monospace">{label}</text>
+            </g>
+          );
+        })}
+
+        {/* NOW line */}
+        {(() => {
+          const nx = toX(nowMs);
+          return nx >= LABEL_W && nx <= GANTT_W ? (
+            <line x1={nx} y1={0} x2={nx} y2={svgH - 12}
+              stroke="rgba(34,153,238,0.6)" strokeWidth={1} strokeDasharray="3,2" />
+          ) : null;
+        })()}
+
+        {/* Rows */}
+        {satIds.map((sid, rowIdx) => {
+          const y = rowIdx * ROW_H + 4;
+          const rowEvents = bySat.get(sid) ?? [];
+
+          return (
+            <g key={sid}>
+              {/* Row background */}
+              <rect x={0} y={y} width={GANTT_W} height={ROW_H - 2}
+                fill={rowIdx % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent"} />
+
+              {/* Satellite label */}
+              <text x={2} y={y + ROW_H - 6} fill={TOKEN.textDim}
+                fontSize="7" fontFamily="monospace"
+                style={{ overflow: "hidden" }}>
+                {sid.slice(-8)}
+              </text>
+
+              {rowEvents.map((ev, i) => {
+                const evMs  = ev.timestamp ? new Date(ev.timestamp).getTime() : nowMs;
+                const x1    = Math.max(LABEL_W, toX(evMs));
+                const burnW = Math.max(2, (30_000 / (windowEndMs - windowStartMs)) * INNER_W); // 30s burn
+                const coolW = (COOLDOWN_S * 1000 / (windowEndMs - windowStartMs)) * INNER_W;
+                const color = typeColor(ev.type);
+                const x2cool = x1 + burnW;
+                // hasLOS=false means the burn was queued during a blackout window
+                const noLos = ev.hasLOS === false;
+
+                if (x1 > GANTT_W) return null;
+
+                return (
+                  <g key={i}>
+                    {/* Blackout zone flag — red hatched rect behind burn block */}
+                    {noLos && (
+                      <>
+                        <rect x={x1 - 2} y={y + 1} width={burnW + 4} height={ROW_H - 4}
+                          fill="rgba(255,30,30,0.18)" stroke="#ff3322" strokeWidth={0.8}
+                          strokeDasharray="2,2" rx={1} />
+                        <text x={x1 + burnW + 3} y={y + ROW_H - 7}
+                          fill="#ff3322" fontSize="6" fontFamily="monospace">NO LOS</text>
+                      </>
+                    )}
+                    {/* Burn block */}
+                    <rect x={x1} y={y + 2} width={Math.min(burnW, GANTT_W - x1)}
+                      height={ROW_H - 6} fill={color} opacity={0.85} rx={1} />
+                    {/* Cooldown block */}
+                    {x2cool < GANTT_W && (
+                      <rect x={x2cool} y={y + 4}
+                        width={Math.min(coolW, GANTT_W - x2cool)}
+                        height={ROW_H - 10}
+                        fill={color} opacity={0.2} rx={1} />
+                    )}
+                    {/* Cooldown label */}
+                    {coolW > 20 && x2cool < GANTT_W - 10 && (
+                      <text x={x2cool + 3} y={y + ROW_H - 7}
+                        fill={color} fontSize="6" fontFamily="monospace" opacity={0.7}>
+                        600s
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })}
+
+        {satIds.length === 0 && (
+          <text x={GANTT_W / 2} y={svgH / 2} fill={TOKEN.textMuted}
+            fontSize="9" textAnchor="middle" fontFamily="monospace">
+            Awaiting maneuver events…
+          </text>
         )}
+      </svg>
+
+      {/* Legend */}
+      <div style={{ display: "flex", gap: "8px", marginTop: "4px", flexWrap: "wrap" }}>
+        {Object.entries(EVENT_COLOR).map(([type, color]) => (
+          <span key={type} style={{ fontSize: "8px", color, fontFamily: TOKEN.fontMono }}>
+            ■ {type.toUpperCase().slice(0, 4)}
+          </span>
+        ))}
+        <span style={{ fontSize: "8px", color: "rgba(255,255,255,0.2)", fontFamily: TOKEN.fontMono }}>
+          ░ 600s cooldown
+        </span>
+        <span style={{ fontSize: "8px", color: "#ff3322", fontFamily: TOKEN.fontMono }}>
+          ▨ NO LOS
+        </span>
       </div>
     </div>
   );
 });
 
-export default Timeline;
+function tabStyle(active, color) {
+  return {
+    background:   active ? `rgba(255,255,255,0.08)` : "transparent",
+    border:       `1px solid ${active ? color + "66" : "transparent"}`,
+    borderRadius: "3px",
+    color:        active ? color : TOKEN.textDim,
+    cursor:       "pointer",
+    fontSize:     "8px",
+    fontWeight:   "700",
+    fontFamily:   TOKEN.fontMono,
+    padding:      "1px 5px",
+  };
+}
+
+export default GanttTimeline;

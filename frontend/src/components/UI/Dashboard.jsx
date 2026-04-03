@@ -3,6 +3,7 @@ import useSimulationStore from "../../store/simulationStore";
 import Alerts from "./Alerts";
 import FuelPanel from "./FuelPanel";
 import Timeline from "./Timeline";
+import DvGraph from "./DvGraph";
 
 // ── Shared design tokens ──────────────────────────────────────────────────────
 export const TOKEN = {
@@ -234,6 +235,7 @@ const Dashboard = memo(function Dashboard() {
       <TTCPanel conjunctions={conjunctions} />
       <Alerts />
       <FuelPanel />
+      <DvGraph />
       <Timeline />
     </div>
   );

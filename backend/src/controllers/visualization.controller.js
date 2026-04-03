@@ -1,6 +1,6 @@
 const { getSnapshot } = require("../services/state.service");
 
-const EARTH_RADIUS_KM = 6378.1363;
+const EARTH_RADIUS_KM = 6378.137;  // doc §3.2
 const RAD2DEG = 180 / Math.PI;
 
 /**
@@ -20,7 +20,7 @@ function eciToLatLonAlt(r) {
 
 async function getVisualizationSnapshot(req, res, next) {
   try {
-    const runId = req.app.locals.runId;
+    const runId = req.runId ?? req.app.locals.runId;
     const { timestamp, satellites, debris } = await getSnapshot({ runId });
 
     res.json({

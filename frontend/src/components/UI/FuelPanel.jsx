@@ -4,8 +4,8 @@ import useSimulationStore from "../../store/simulationStore";
 import { FUEL_WARNING_PCT } from "../../utils/constants";
 import { panel, sectionLabel, TOKEN } from "./Dashboard";
 
-// Max propellant matches backend DEFAULT_PROPELLANT_KG = 200
-const MAX_FUEL_KG = 200;
+// Max propellant matches doc §5.1 DEFAULT_PROPELLANT_KG = 50 kg
+const MAX_FUEL_KG = 50;
 
 // ── Fuel thresholds ───────────────────────────────────────────────────────────
 function fuelColor(pct) {

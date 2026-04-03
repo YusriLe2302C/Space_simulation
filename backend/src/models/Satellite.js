@@ -9,7 +9,7 @@ const SatelliteSchema = new Schema(
 
     noradId: { type: Number, index: true, sparse: true },
     internationalDesignator: { type: String, trim: true, index: true },
-    name: { type: String, required: true, trim: true, index: true },
+    name: { type: String, trim: true, index: true },
 
     operator: {
       name: { type: String, trim: true, index: true },
@@ -39,6 +39,8 @@ const SatelliteSchema = new Schema(
     tags: [{ type: String, trim: true, index: true }],
 
     lastTelemetryAt: { type: Date, index: true },
+
+    fuel_kg: { type: Number, min: 0, default: 50.0, index: true },  // doc §5.1: initial propellant 50 kg
 
     latestEci: {
       timestamp: { type: Date, index: true },

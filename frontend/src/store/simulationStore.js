@@ -33,6 +33,8 @@ const useSimulationStore = create((set, get) => ({
 
   collisionsTotal:  0,
   maneuversTotal:   0,
+  fuelConsumedKg:   0,    // cumulative fuel consumed across fleet (doc §6.2)
+  dvHistory:        [],   // [{ timestamp, dvMs, collisionsAvoided }] — max 200
 
   // ── Snapshot action ────────────────────────────────────────────────────────
 
@@ -134,6 +136,7 @@ const useSimulationStore = create((set, get) => ({
         satelliteId: m.satelliteId,
         timestamp:   m.timestamp ?? payload.timestamp,
         reasoning:   m.reasoning ?? null,
+        hasLOS:      m.hasLOS ?? true,  // false = burn queued during blackout
       }));
       updates.events = [...incoming, ...get().events].slice(0, 100);
     }
@@ -144,11 +147,22 @@ const useSimulationStore = create((set, get) => ({
     }
 
     // Collision / maneuver counters
-    if (typeof payload.collisions_detected === "number") {
-      updates.collisionsTotal = get().collisionsTotal + payload.collisions_detected;
+    // collisions_detected = pairs still within threshold AFTER burns (genuine hits)
+    // maneuvers_executed  = burns fired this tick = collisions avoided
+    const hits    = typeof payload.collisions_detected === "number" ? payload.collisions_detected : 0;
+    const avoided = typeof payload.maneuvers_executed  === "number" ? payload.maneuvers_executed  : 0;
+
+    if (hits > 0) {
+      updates.collisionsTotal = get().collisionsTotal + hits;
     }
-    if (typeof payload.maneuvers_executed === "number") {
-      updates.maneuversTotal = get().maneuversTotal + payload.maneuvers_executed;
+    if (avoided > 0) {
+      const entry = {
+        timestamp:         payload.timestamp ?? new Date().toISOString(),
+        collisionsAvoided: avoided,
+        maneuvers:         avoided,
+      };
+      updates.dvHistory      = [...get().dvHistory, entry].slice(-200);
+      updates.maneuversTotal = get().maneuversTotal + avoided;
     }
 
     // Only call set() if something actually changed

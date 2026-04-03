@@ -7,7 +7,7 @@ const { simulateStepHttp } = require("../services/pythonBridge");
 const { executeDueManeuvers } = require("../services/maneuver.service");
 const { broadcast } = require("../services/socket.service");
 
-const EARTH_RADIUS_KM = 6378.1363;
+const EARTH_RADIUS_KM = 6378.137;  // doc §3.2
 const RAD2DEG = 180 / Math.PI;
 
 function eciToLatLonAlt(state) {
@@ -23,9 +23,9 @@ function eciToLatLonAlt(state) {
 
 async function stepSimulation(req, res, next) {
   try {
-    const runId = req.app.locals.runId;
+    const runId           = req.runId;
     const pythonEngineUrl = req.app.locals.pythonEngineUrl;
-    const logger = req.app.locals.logger;
+    const logger          = req.app.locals.logger;
     const { step_seconds } = req.body;
 
     const { objects, typeById, nameById } = await getObjectsForSimulation({ runId });
@@ -70,11 +70,11 @@ async function stepSimulation(req, res, next) {
 
     broadcast("state_update", {
       timestamp:           sim.newTimestamp,
-      collisions:          engine.collisions,
+      collisions_detected: engine.collisions,
       maneuvers_executed:  engine.maneuvers,
       objects:             satObjects,
       orbit_paths:         engine.orbit_paths,
-    });
+    }, runId);
     res.json(payload);
   } catch (err) {
     next(err);

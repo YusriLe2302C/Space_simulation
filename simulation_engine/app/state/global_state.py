@@ -15,7 +15,10 @@ from ..utils.math_utils import ensure_state, norm
 # Override with ACM_SNAPSHOT_PATH env var.
 import tempfile as _tempfile
 _SNAPSHOT_PATH = Path(
-    os.environ.get("ACM_SNAPSHOT_PATH", str(Path(_tempfile.gettempdir()) / "acm_global_state.json"))
+    os.environ.get(
+        "ACM_SNAPSHOT_PATH",
+        str(Path(__file__).parent.parent.parent / "data" / "acm_global_state.json")
+    )
 )
 
 
@@ -52,7 +55,7 @@ class GlobalState:
                 isp_s=isp,
                 current_mass_kg=dry + prop,
                 target_radius_km=target_r,
-                station_tolerance_km=1.0,
+                station_tolerance_km=10.0,  # doc §5.2: 10 km spherical box
             )
             return
         rec.state = st

@@ -34,8 +34,8 @@ export const COLOR_SAT_CRITICAL = 0xff2200;
 export const COLOR_EARTH_ATMOSPHERE = 0x1a3a5c;
 
 // API
-export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
-export const SOCKET_URL   = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:3000";
+export const API_BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:5173";
+export const SOCKET_URL   = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:5173";
 
 // Socket events
 export const EVT_STATE_UPDATE = "state_update";

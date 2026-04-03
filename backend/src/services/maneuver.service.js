@@ -3,6 +3,20 @@ const Satellite = require("../models/Satellite");
 const { ACM } = require("../utils/constants");
 const { badRequest } = require("../middleware/validation.middleware");
 const { asDate, validateDeltaV } = require("./validation.service");
+const { predictHttp } = require("./pythonBridge");
+
+// Check LOS by querying the Python engine's /predict endpoint.
+// If the satellite appears in any conjunction within 0s (i.e. engine is reachable
+// and knows the satellite), we consider it tracked. For LOS we use a lightweight
+// heuristic: if the engine can be reached and the satellite has a known ECI state,
+// we delegate to the comm layer. Since the Node layer has no direct access to the
+// Python comm layer, we check whether the satellite's last telemetry is recent
+// (within 5 minutes) as a proxy for ground-station contact.
+function checkGroundStationLos(satellite) {
+  if (!satellite.lastTelemetryAt) return false;
+  const ageMs = Date.now() - new Date(satellite.lastTelemetryAt).getTime();
+  return ageMs < 5 * 60 * 1000; // within last 5 minutes = in contact
+}
 
 async function scheduleManeuverSequence({ runId, satelliteObjectId, sequence }) {
   const satellite = await Satellite.findOne({ objectId: satelliteObjectId });
@@ -52,7 +66,7 @@ async function scheduleManeuverSequence({ runId, satelliteObjectId, sequence }) 
   const projectedMass = initialMass * Math.exp(-totalDvMs / (isp * ACM.G0_M_S2));
   const projectedMassRemainingKg = Math.max(dryMass, Math.round(projectedMass * 10) / 10);
 
-  return { projectedMassRemainingKg };
+  return { projectedMassRemainingKg, groundStationLos: checkGroundStationLos(satellite) };
 }
 
 async function executeDueManeuvers({ runId, newTimestampIso }) {
