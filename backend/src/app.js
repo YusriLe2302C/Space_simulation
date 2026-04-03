@@ -2,6 +2,7 @@ const express   = require("express");
 const cors      = require("cors");
 const helmet    = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { ipKeyGenerator } = require("express-rate-limit");
 
 const telemetryRoutes     = require("./routes/telemetry.routes");
 const simulationRoutes    = require("./routes/simulation.routes");
@@ -92,7 +93,7 @@ function createApp({ logger, corsOrigin, runId }) {
     max:             200,
     standardHeaders: true,
     legacyHeaders:   false,
-    keyGenerator:    (req) => req.headers["x-run-id"] ?? req.ip,
+    keyGenerator:    (req) => req.headers["x-run-id"] ?? ipKeyGenerator(req),
     message:         { error: "Per-run rate limit exceeded" },
   }));
   api.use(requireAuth);

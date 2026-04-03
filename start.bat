@@ -46,7 +46,9 @@ if errorlevel 1 (
 
 start "ACM - Backend" cmd /k "cd /d "%BACKEND%" && node server.js"
 
-:: ── Seed database (runs after backend, retries until ready) ─────────────────
+:: ── Seed database (wait 15s for backend to be ready, then seed) ────────────
+echo Waiting 15s for backend to start before seeding...
+timeout /t 15 /nobreak >nul
 echo Seeding database with orbital data...
 start "ACM - Seeder" cmd /c "cd /d "%BACKEND%" && node src/scripts/seed.js"
 

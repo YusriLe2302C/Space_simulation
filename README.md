@@ -1,447 +1,523 @@
-# Autonomous Constellation Manager (ACM)
+# ACM System (README2)
 
-A full-stack orbital debris avoidance and constellation management system built for the **National Space Hackathon 2026** at IIT Delhi.
-
-The system autonomously ingests high-frequency satellite telemetry, predicts conjunctions up to 24 hours ahead using RK4+J2 propagation and KD-tree spatial indexing, executes RTN-frame collision avoidance maneuvers, and visualizes the entire fleet in real-time.
+This document is the **developer-facing** reference for the repository in `c:\Users\Lenovo\Desktop\Space_simulation`. It complements `README.md` by going deeper on **system architecture**, **runtime workflows**, and **API + event definitions** (backend + simulation engine + frontend call-sites).
 
 ---
 
-## Architecture
+## 1) System Architecture (High-Level)
+
+### Components
+
+- **Frontend** (`frontend/`): React + Three.js dashboard (Vite dev server on `:5173`).
+- **Backend API** (`backend/`): Node.js (Express) + Socket.IO + MongoDB (API on `:8000`).
+- **Simulation Engine** (`simulation_engine/`): Python FastAPI engine (internal service on `:9000`).
+- **Database**: MongoDB (`:27017`) holding latest states + maneuvers + simulation timestamp.
+
+### Data/Control Flow (ASCII)
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Browser (port 5173)                  │
-│          React + Three.js  "Orbital Insight" UI         │
-└────────────────────────┬────────────────────────────────┘
-                         │  REST + WebSocket
-┌────────────────────────▼────────────────────────────────┐
-│              Node.js Backend  (port 8000)               │
-│   Express API · Socket.IO · MongoDB · JWT auth          │
-└────────────────────────┬────────────────────────────────┘
-                         │  HTTP (internal)
-┌────────────────────────▼────────────────────────────────┐
-│           Python Simulation Engine  (port 9000)         │
-│   FastAPI · RK4+J2 · KD-tree · COLA · Hohmann          │
-└─────────────────────────────────────────────────────────┘
-                         │
-              ┌──────────▼──────────┐
-              │   MongoDB  :27017   │
-              └─────────────────────┘
+Browser (5173)
+  |
+  | REST (JWT + x-run-id)        WebSocket (Socket.IO)
+  |------------------------->    <---------------------
+  |
+Node Backend (8000)  -----------------------------------> MongoDB (27017)
+  |
+  | Internal HTTP (x-engine-key)
+  v
+Python Engine (9000)
 ```
 
+### “Run ID” (multi-run isolation)
+
+Most state in MongoDB is partitioned by a `runId` string:
+
+- Backend validates `runId` via `x-run-id` header or `?runId=...`.
+- WebSocket clients join a `runId` room during handshake.
+- Engine is **not** runId-aware; the backend provides runId isolation at the API + storage layer.
+
+Implementation:
+- Backend `runId` validation: `backend/src/middleware/runId.middleware.js`
+- WebSocket handshake room join: `backend/server.js`
+
+### Units + coordinate conventions
+
+- Telemetry + engine state vectors are **ECI** in **km** and **km/s**: `[x, y, z, vx, vy, vz]`.
+- UI snapshot/plotting uses **geographic** coordinates: `lat`/`lon` in **degrees**, `alt` in **km**.
+- Backend converts ECI → `lat/lon/alt` for visualization in:
+  - `backend/src/controllers/visualization.controller.js` (snapshot)
+  - `backend/server.js` and `backend/src/controllers/simulation.controller.js` (socket payloads)
+
 ---
 
-## Prerequisites
+## 2) Runtime Workflows
 
-| Tool | Minimum Version |
-|---|---|
-| Node.js | 18.x |
-| Python | 3.11+ |
-| MongoDB | 6.x (running locally) |
-| npm | 9.x |
+### 2.1 Local “one-click” start (Windows)
+
+Launcher: `start.bat`
+
+It starts:
+1. Python engine (`uvicorn app.main:app --port 9000 --reload`)
+2. Node backend (`node server.js` on port `8000`)
+3. Seeder (`node backend/src/scripts/seed.js`)
+4. Frontend (`npm run dev` in `frontend/`)
+
+Prereq: MongoDB must be running locally.
+
+### 2.2 Seeding workflow (real orbital objects)
+
+Seeder: `backend/src/scripts/seed.js`
+
+Flow:
+1. Calls `POST /auth/token` with `ACM_API_KEY` to obtain an operator JWT.
+2. Fetches real TLEs (external free API) and converts them into ECI state vectors.
+3. Pushes telemetry in batches: `POST /api/telemetry`
+4. Triggers the first sim step: `POST /api/simulate/step`
+
+Notes:
+- The seed script uses `process.env.ACM_RUN_ID` to set `x-run-id`.
+- Telemetry objects are capped at `500` per request (backend guard).
+
+### 2.3 Backend simulation loop (automatic ticking)
+
+Entry point: `backend/server.js`
+
+The backend runs an internal loop:
+- Every ~8 seconds (wall clock), it advances simulation time by **60 seconds** (`STEP_SECONDS=60`).
+- It fetches current objects from MongoDB (satellites + debris for the current runId).
+- It calls the Python engine: `POST {PYTHON_ENGINE_URL}/simulate` (with `x-engine-key`).
+- It writes results back to MongoDB and broadcasts a `state_update` event.
+
+Why this exists:
+- The UI stays live without requiring a user to call `/api/simulate/step`.
+
+### 2.4 Manual stepping (API-triggered tick)
+
+Endpoint: `POST /api/simulate/step` (backend)
+
+This path does a single engine step using a caller-provided `step_seconds`, updates MongoDB, executes any due maneuvers, and broadcasts a `state_update`.
+
+### 2.5 Maneuver scheduling
+
+Endpoint: `POST /api/maneuver/schedule`
+
+What it does:
+- Validates burn schedule constraints (cooldown, comm delay).
+- Validates delta-V magnitude (`<= 15 m/s`).
+- Stores planned burns in MongoDB as `Maneuver` docs with status `scheduled`.
+- Returns a 202 response with “validation” metadata (fuel estimate + LOS heuristic).
+
+Important: burns are marked `executed` when simulation time reaches them (`executeDueManeuvers()`), not when scheduled.
 
 ---
 
-## Quick Start (Windows)
+## 3) API Reference (Backend: Node / Express)
 
-If you are on Windows, a single launcher script starts everything:
+### 3.1 Base URL + common requirements
 
-```bat
-start.bat
+Default local base:
+- Backend: `http://localhost:8000`
+
+Common headers for `/api/*` routes:
+- `Authorization: Bearer <jwt>`
+- `x-run-id: <runId>` (4–64 chars, `[a-zA-Z0-9_-]`)
+- `Content-Type: application/json` (for POSTs)
+
+`x-run-id` fallback:
+- If `x-run-id` is missing, the backend can fall back to `ACM_RUN_ID` (server-configured default). In practice, clients should still send `x-run-id` explicitly.
+
+Auth model:
+- Backend issues JWTs signed with `JWT_SECRET`.
+- `/api/*` routes require JWT (`backend/src/middleware/auth.middleware.js`).
+  - The JWT `role` (`viewer` vs `operator`) is **not currently enforced** by backend authorization logic (no RBAC yet).
+
+Error shape:
+```json
+{ "error": "..." }
+```
+For `5xx`, the backend returns `"Internal Server Error"` regardless of internal message.
+
+### 3.2 Public endpoints (no JWT)
+
+#### GET `/health`
+
+Response:
+```json
+{ "status": "ok" }
 ```
 
-This will:
-1. Install Python dependencies and start the simulation engine on port 9000
-2. Install Node dependencies and start the backend on port 8000
-3. Seed the database with real TLE data from Celestrak
-4. Install frontend dependencies and start the dev server on port 5173
+#### POST `/auth/token` (server-to-server)
 
-> MongoDB must already be running before you launch. See [Start MongoDB](#start-mongodb) below.
+Purpose: exchange `ACM_API_KEY` for an operator JWT (used by `seed.js` and other trusted clients).
+
+Request:
+```json
+{ "api_key": "<ACM_API_KEY>" }
+```
+
+Response:
+```json
+{ "token": "<jwt>", "expires_in": "8h" }
+```
+
+Failure:
+- `401` invalid key
+- `500` missing `ACM_API_KEY` in backend env
+
+#### POST `/auth/frontend-token` (BFF)
+
+Purpose: **frontend** gets a short-lived **read-only** viewer JWT without embedding a secret in the browser bundle.
+
+Request body: empty OK (backend ignores it)
+
+Response:
+```json
+{ "token": "<jwt>", "expires_in": "4h" }
+```
+
+### 3.3 Protected API endpoints (JWT + x-run-id)
+
+#### POST `/api/telemetry`
+
+Purpose: ingest telemetry and upsert objects.
+
+Constraints:
+- `objects.length` must be `1..500`
+
+Request:
+```json
+{
+  "timestamp": "2026-04-02T12:00:00.000Z",
+  "objects": [
+    {
+      "id": "SAT-001",
+      "name": "Optional satellite name",
+      "type": "SATELLITE",
+      "r": { "x": 7000, "y": 0, "z": 0 },
+      "v": { "x": 0, "y": 7.5, "z": 0 }
+    },
+    {
+      "id": "DEB-001",
+      "type": "DEBRIS",
+      "r": { "x": 7000.05, "y": 0, "z": 0 },
+      "v": { "x": 0, "y": 7.49, "z": 0 }
+    }
+  ]
+}
+```
+
+Response:
+```json
+{
+  "status": "ACK",
+  "processed_count": 2,
+  "active_cdm_warnings": 0
+}
+```
+
+#### POST `/api/simulate/step`
+
+Purpose: run one simulation step in the Python engine, write results to MongoDB, broadcast WebSocket update.
+
+Request:
+```json
+{ "step_seconds": 60 }
+```
+
+Response:
+```json
+{
+  "status": "STEP_COMPLETE",
+  "new_timestamp": "2026-04-02T12:01:00.000Z",
+  "collisions_detected": 0,
+  "maneuvers_executed": 0
+}
+```
+
+Side effects:
+- Updates `SimulationState.timestamp` for the runId.
+- Updates `Satellite.latestEci` and `Debris.latestEci`.
+- Emits WebSocket `state_update`.
+
+#### POST `/api/maneuver/schedule`
+
+Purpose: schedule one or more burns for a satellite.
+
+Request:
+```json
+{
+  "satelliteId": "SAT-001",
+  "maneuver_sequence": [
+    {
+      "burn_id": "BURN-001",
+      "burnTime": "2026-04-02T12:10:00.000Z",
+      "deltaV_vector": { "x": 0.0, "y": 5.0, "z": 0.0 }
+    }
+  ]
+}
+```
+
+Constraints (enforced):
+- `burnTime >= now + 10s` (comm delay)
+- burns in the sequence must be `>= 600s` apart (cooldown)
+- `|deltaV_vector| <= 15 m/s`
+
+Response (HTTP `202 Accepted`):
+```json
+{
+  "status": "SCHEDULED",
+  "validation": {
+    "ground_station_los": true,
+    "sufficient_fuel": true,
+    "projected_mass_remaining_kg": 548.9
+  }
+}
+```
+
+#### GET `/api/visualization/snapshot`
+
+Purpose: frontend-friendly snapshot using geographic coordinates.
+
+Response:
+```json
+{
+  "timestamp": "2026-04-02T12:00:00.000Z",
+  "satellites": [
+    {
+      "id": "SAT-001",
+      "name": "SAT-001",
+      "lat": 12.34,
+      "lon": 56.78,
+      "alt": 420.1,
+      "fuel_kg": 49.7,
+      "status": "NOMINAL"
+    }
+  ],
+  "debris_cloud": [
+    ["DEB-001", 12.3, 56.7, 420.0]
+  ]
+}
+```
+
+#### GET `/api/predict` (proxy to engine)
+
+Purpose: fetch conjunction predictions from the engine’s `/predict` endpoint.
+
+Response: whatever the engine returns (see engine API below).
 
 ---
 
-## Manual Setup
+## 4) Realtime Events (Socket.IO)
 
-### 1. Clone the repository
+### 4.1 Connection
 
+Client uses Socket.IO and must provide `runId` during handshake:
+
+- Frontend sets `auth: { runId: VITE_ACM_RUN_ID ?? "default" }` in `frontend/src/services/socket.js`
+- Backend joins socket to room `runId` in `backend/server.js`
+
+### 4.2 Events
+
+#### Event: `state_update`
+
+Emitted by the backend:
+- from the automatic loop (`backend/server.js`), and
+- from the manual step endpoint (`backend/src/controllers/simulation.controller.js`).
+
+Payload (common fields):
+- `timestamp` (ISO string)
+- `collisions_detected` (number)
+- `maneuvers_executed` (number)
+- `dv_total_ms` (number, approximate fleet-wide)
+- `fuel_consumed_kg` (number, approximate fleet-wide)
+- `objects` (array)
+  - in the **server loop**, each object is `{ id, name, lat, lon, alt, hasLOS }`
+  - in the **manual step**, objects are `{ id, name, lat, lon, alt, orbit_path }`
+- `orbit_paths` (object map of satelliteId -> list of `{lat,lon,alt}`) (sometimes omitted by server loop to save bandwidth)
+
+Frontend consumption:
+- Socket wiring: `frontend/src/hooks/useSocket.js`
+- Fast-path store: `frontend/src/store/simulationStore.js`
+
+---
+
+## 5) API Reference (Simulation Engine: Python / FastAPI)
+
+Base URL (default local):
+- `http://localhost:9000`
+
+Auth header (required on all engine routes):
+- `x-engine-key: <ENGINE_SECRET>`
+
+### POST `/simulate`
+
+Request:
+```json
+{
+  "objects": [
+    { "id": "SAT-001", "state": [7000, 0, 0, 0, 7.5, 0] }
+  ],
+  "step_seconds": 60
+}
+```
+
+Response:
+```json
+{
+  "objects": [
+    {
+      "id": "SAT-001",
+      "state": [7000.1, 0.2, 0.3, 0.01, 7.5, 0.0],
+      "current_mass_kg": 549.9,
+      "sat_status": "NOMINAL"
+    }
+  ],
+  "collisions": 0,
+  "maneuvers": 0,
+  "reasoning": { "SAT-001": "..." },
+  "orbit_paths": {
+    "SAT-001": [ { "lat": 0.0, "lon": 0.0, "alt": 400.0 } ]
+  }
+}
+```
+
+### GET `/predict?horizon_s=86400&dt_s=60`
+
+Response:
+```json
+{
+  "conjunctions": [
+    {
+      "a": "SAT-001",
+      "b": "DEB-001",
+      "tca_s": 1234.0,
+      "miss_distance_km": 0.42,
+      "time_to_event_s": 1234.0
+    }
+  ],
+  "horizon_s": 86400.0,
+  "dt_s": 60.0
+}
+```
+
+Concurrency note:
+- The engine uses a lock for `/simulate` and only snapshots state under lock for `/predict` (prediction work runs outside the lock).
+
+State persistence:
+- Engine persists to `simulation_engine/data/acm_global_state.json` periodically.
+
+---
+
+## 6) Data Model (MongoDB)
+
+Collections (Mongoose models in `backend/src/models/`):
+
+- `Satellite`
+  - `objectId` (unique), `name`, `status`, `fuel_kg`
+  - `latestEci`: `{ timestamp, runId, r:{x,y,z}, v:{x,y,z} }`
+- `Debris`
+  - `objectId` (unique), `status`
+  - `latestEci` similar to `Satellite`
+- `SimulationState`
+  - `runId` (unique), `timestamp` (authoritative sim time in backend)
+- `Maneuver`
+  - `requestId` (unique), `satelliteObjectId`, `runId`
+  - `dvMs` + `dvMagMs`, `burnTime`, `status`
+- `CollisionEvent`
+  - used for warning counts and future CDM workflows (`telemetry.controller` counts active warnings)
+
+Important: Backend queries simulation objects by `latestEci.runId == <runId>`.
+
+---
+
+## 7) Configuration
+
+### 7.1 Backend (`backend/.env`)
+
+Template: `backend/.env.example`
+
+Required by backend code:
+- `MONGODB_URI`
+- `CORS_ORIGIN` (comma-separated allowed origins)
+- `JWT_SECRET`
+- `ACM_API_KEY` (for `/auth/token`)
+- `ENGINE_SECRET` (for engine HTTP calls)
+
+Optional:
+- `PORT` (default `8000`)
+- `PYTHON_ENGINE_URL` (default `http://localhost:9000`)
+- `ACM_RUN_ID` (default `default`)
+
+Note: `REDIS_URL` and `FRONTEND_TOKEN_SECRET` appear in `.env.example` but are not used by current code.
+
+### 7.2 Simulation engine (`simulation_engine/.env`)
+
+Template: `simulation_engine/.env.example`
+
+Required:
+- `ENGINE_SECRET` (must match backend `ENGINE_SECRET`)
+
+### 7.3 Frontend (`frontend/.env` via Vite)
+
+Used variables:
+- `VITE_BACKEND_URL` (default `http://localhost:8000`)
+- `VITE_ACM_RUN_ID` (default `default`)
+
+---
+
+## 8) Limits, Timeouts, and Rate-Limits (Important)
+
+Backend HTTP:
+- Hard request deadline middleware: ~15 seconds.
+- `/auth/*` rate limit: 10 requests/min/IP.
+- `/api/*` rate limit: 120 requests/min/IP (+ per-runId 200/min).
+- `/api/telemetry`: additional 30 requests/min/IP and `objects.length <= 500`.
+
+Backend → Engine:
+- `/simulate` timeout ~25s (with retries) in `backend/src/services/pythonBridge.js`.
+
+WebSocket:
+- Backend disconnects a client that sends >20 events/sec (simple flood protection).
+
+---
+
+## 9) Testing
+
+Backend tests live in `backend/tests/api.test.js`.
+
+Run (from `backend/`):
 ```bash
-git clone <your-repo-url>
-cd acm-system
+npm test
 ```
 
-### 2. Start MongoDB
-
-```bash
-# Create a data directory if it doesn't exist
-mkdir -p ~/mongo-data
-
-# Start MongoDB
-mongod --dbpath ~/mongo-data
-```
-
-On Windows:
-```bat
-mongod --dbpath C:\data\db
-```
+Requirement:
+- Set `MONGODB_URI` to a reachable MongoDB. Tests reset collections.
 
 ---
 
-### 3. Simulation Engine (Python — port 9000)
+## 10) Developer Notes / Where to Change Things
 
-```bash
-cd simulation_engine
-
-# Create and activate a virtual environment (recommended)
-python -m venv .venv
-
-# Linux / macOS
-source .venv/bin/activate
-
-# Windows
-.venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env — set ENGINE_SECRET (must match backend ENGINE_SECRET)
-```
-
-Generate a secret:
-```bash
-node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
-```
-
-Start the engine:
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
-```
+- Add/modify REST endpoints: `backend/src/routes/*` + `backend/src/controllers/*`
+- Validation rules: `backend/src/middleware/validation.middleware.js`
+- Engine HTTP client: `backend/src/services/pythonBridge.js`
+- Automatic simulation loop: `backend/server.js`
+- Engine behavior: `simulation_engine/app/state/state_updater.py`
+- Frontend REST usage: `frontend/src/services/api.js`
+- Frontend realtime wiring: `frontend/src/services/socket.js` + `frontend/src/hooks/useSocket.js`
 
 ---
 
-### 4. Backend (Node.js — port 8000)
+## Docker (Quick Start)
 
+Docker files included:
+- `Dockerfile` (root), `docker-compose.yml`
+- `simulation_engine/Dockerfile`
+- `frontend/Dockerfile`
+
+Steps:
 ```bash
-cd backend
-
-npm install
-
-# Copy and configure environment
-cp .env.example .env
+cp backend/.env.example backend/.env
+cp simulation_engine/.env.example simulation_engine/.env
+docker compose up --build
+docker compose exec backend node src/scripts/seed.js
 ```
-
-Edit `backend/.env`:
-
-```env
-PORT=8000
-MONGODB_URI=mongodb://127.0.0.1:27017/acm
-CORS_ORIGIN=http://localhost:5173
-PYTHON_ENGINE_URL=http://localhost:9000
-ACM_RUN_ID=default
-
-# Generate each with:
-# node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-JWT_SECRET=<your-jwt-secret>
-
-# node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
-ACM_API_KEY=<your-api-key>
-ENGINE_SECRET=<your-engine-secret>          # must match simulation_engine/.env
-FRONTEND_TOKEN_SECRET=<your-frontend-token-secret>
-```
-
-Start the backend:
-```bash
-node server.js
-```
-
----
-
-### 5. Seed the Database
-
-The seeder fetches real TLE data from Celestrak and posts it to the backend. Run it **after** the backend is up:
-
-```bash
-cd backend
-node src/scripts/seed.js
-```
-
-This seeds ~100 real LEO satellites. The seeder retries automatically until the backend is ready.
-
----
-
-### 6. Frontend (React — port 5173)
-
-```bash
-cd frontend
-
-npm install
-
-# Copy and configure environment
-cp .env.example .env
-```
-
-Edit `frontend/.env`:
-
-```env
-VITE_BACKEND_URL=http://localhost:8000
-VITE_ACM_RUN_ID=default
-```
-
-Start the dev server:
-```bash
-npm run dev
-```
-
-Open [http://localhost:5173](http://localhost:5173) in your browser.
-
----
-
-## Environment Variables Reference
-
-### Generating Secrets
-
-All secrets must be generated before first run. Run these commands once and paste the output into the respective `.env` files:
-
-```bash
-# JWT_SECRET — 32-byte hex (backend only)
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-# ACM_API_KEY — 16-byte hex (backend only)
-node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
-
-# ENGINE_SECRET — 16-byte hex (SAME value in both backend/.env and simulation_engine/.env)
-node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
-
-# FRONTEND_TOKEN_SECRET — 16-byte hex (backend only)
-node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
-```
-
-> **Critical:** `ENGINE_SECRET` must be identical in `backend/.env` and `simulation_engine/.env`. If they differ the backend gets 403 errors from the engine on every simulation tick.
-
----
-
-### Complete `.env` Files
-
-#### `backend/.env`
-
-```env
-PORT=8000
-MONGODB_URI=mongodb://127.0.0.1:27017/acm
-CORS_ORIGIN=http://localhost:5173
-PYTHON_ENGINE_URL=http://localhost:9000
-ACM_RUN_ID=default
-JWT_SECRET=<output of 32-byte command above>
-ACM_API_KEY=<output of 16-byte command above>
-ENGINE_SECRET=<shared secret — same in both .env files>
-FRONTEND_TOKEN_SECRET=<output of 16-byte command above>
-```
-
-#### `simulation_engine/.env`
-
-```env
-ENGINE_SECRET=<same value as ENGINE_SECRET in backend/.env>
-```
-
-#### `frontend/.env`
-
-```env
-VITE_BACKEND_URL=http://localhost:8000
-VITE_ACM_RUN_ID=default
-```
-
----
-
-### Variable Reference
-
-#### `backend/.env`
-
-| Variable | Description |
-|---|---|
-| `PORT` | Backend HTTP port (default: 8000) |
-| `MONGODB_URI` | MongoDB connection string |
-| `CORS_ORIGIN` | Allowed frontend origin |
-| `PYTHON_ENGINE_URL` | Internal URL of the simulation engine |
-| `ACM_RUN_ID` | Simulation run identifier |
-| `JWT_SECRET` | Secret for signing JWTs — 32-byte hex |
-| `ACM_API_KEY` | API key for machine-to-machine auth — 16-byte hex |
-| `ENGINE_SECRET` | Shared secret with simulation engine — 16-byte hex |
-| `FRONTEND_TOKEN_SECRET` | Secret for frontend viewer tokens — 16-byte hex |
-
-#### `simulation_engine/.env`
-
-| Variable | Description |
-|---|---|
-| `ENGINE_SECRET` | Must be identical to `ENGINE_SECRET` in `backend/.env` |
-
-#### `frontend/.env`
-
-| Variable | Description |
-|---|---|
-| `VITE_BACKEND_URL` | Backend base URL (default: http://localhost:8000) |
-| `VITE_ACM_RUN_ID` | Run ID sent in `x-run-id` header |
-
----
-
-## Service URLs
-
-| Service | URL |
-|---|---|
-| Frontend Dashboard | http://localhost:5173 |
-| Backend API | http://localhost:8000 |
-| Backend Health | http://localhost:8000/health |
-| Simulation Engine | http://localhost:9000 (internal only) |
-| Engine API Docs | http://localhost:9000/docs |
-
----
-
-## API Overview
-
-All `/api/*` endpoints require a Bearer JWT. Obtain one first:
-
-```bash
-# Get a token
-curl -X POST http://localhost:8000/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"api_key": "<your-ACM_API_KEY>"}'
-```
-
-Use the returned token in subsequent requests:
-
-```bash
-# Post telemetry
-curl -X POST http://localhost:8000/api/telemetry \
-  -H "Authorization: Bearer <token>" \
-  -H "x-run-id: default" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "timestamp": "2026-03-12T08:00:00.000Z",
-    "objects": [{
-      "id": "SAT-001", "type": "SATELLITE",
-      "r": {"x": 4500.2, "y": -2100.5, "z": 4800.1},
-      "v": {"x": -1.25,  "y": 6.84,    "z": 3.12}
-    }]
-  }'
-
-# Advance simulation by 3600 seconds
-curl -X POST http://localhost:8000/api/simulate/step \
-  -H "Authorization: Bearer <token>" \
-  -H "x-run-id: default" \
-  -H "Content-Type: application/json" \
-  -d '{"step_seconds": 3600}'
-
-# Schedule a maneuver
-curl -X POST http://localhost:8000/api/maneuver/schedule \
-  -H "Authorization: Bearer <token>" \
-  -H "x-run-id: default" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "satelliteId": "SAT-001",
-    "maneuver_sequence": [{
-      "burn_id": "EVASION_1",
-      "burnTime": "2026-03-12T14:15:30.000Z",
-      "deltaV_vector": {"x": 0.002, "y": 0.015, "z": -0.001}
-    }]
-  }'
-
-# Get visualization snapshot
-curl http://localhost:8000/api/visualization/snapshot \
-  -H "Authorization: Bearer <token>" \
-  -H "x-run-id: default"
-```
-
----
-
-## Project Structure
-
-```
-acm-system/
-├── backend/                    # Node.js API server
-│   ├── src/
-│   │   ├── config/             # env.js, db.js
-│   │   ├── controllers/        # telemetry, simulation, maneuver, visualization
-│   │   ├── middleware/         # auth, runId, error, validation
-│   │   ├── models/             # Mongoose schemas
-│   │   ├── routes/             # Express routers
-│   │   ├── scripts/seed.js     # Database seeder (real TLE data)
-│   │   ├── services/           # state, maneuver, pythonBridge, socket
-│   │   ├── utils/              # constants, logger
-│   │   └── app.js              # Express app factory
-│   └── server.js               # Entry point + simulation loop
-│
-├── simulation_engine/          # Python physics engine
-│   └── app/
-│       ├── collision/          # KD-tree predictor, Pc (Foster method)
-│       ├── communication/      # Ground station LOS + GMST + blackout
-│       ├── decision/           # RTN COLA, Hohmann station-keeping, optimizer
-│       ├── fuel/               # Tsiolkovsky rocket equation
-│       ├── physics/            # RK4, J2 perturbation, propagator
-│       ├── spatial/            # scipy KD-tree wrapper
-│       ├── state/              # Global state, simulate_step
-│       ├── utils/              # constants, math_utils
-│       └── main.py             # FastAPI app (/simulate, /predict)
-│
-├── frontend/                   # React + Three.js dashboard
-│   └── src/
-│       ├── components/
-│       │   ├── Scene/          # Three.js 3D scene (Earth, satellites, debris)
-│       │   └── UI/             # GroundTrack, BullseyePlot, FuelPanel,
-│       │                       # DvGraph, Timeline, Dashboard, Alerts
-│       ├── hooks/              # useSocket, useSimulationData
-│       ├── services/           # api.js, socket.js
-│       ├── store/              # simulationStore.js (Zustand)
-│       └── utils/              # constants, coordinateUtils
-│
-├── start.bat                   # Windows one-click launcher
-└── README.md
-```
-
----
-
-## Key Physics Constants
-
-| Constant | Value | Source |
-|---|---|---|
-| µ (Earth gravitational parameter) | 398600.4418 km³/s² | §3.2 |
-| RE (Earth radius) | 6378.137 km | §3.2 |
-| J2 | 1.08263 × 10⁻³ | §3.2 |
-| Collision threshold | 0.100 km (100 m) | §3.3 |
-| Dry mass | 500.0 kg | §5.1 |
-| Initial propellant | 50.0 kg | §5.1 |
-| Isp | 300.0 s | §5.1 |
-| Max ΔV per burn | 15.0 m/s | §5.1 |
-| Thruster cooldown | 600 s | §5.1 |
-| Station-keeping box | 10 km spherical | §5.2 |
-| Comm delay | 10 s | §5.4 |
-| Graveyard threshold | 5% fuel remaining | §5 |
-
----
-
-## Troubleshooting
-
-**MongoDB connection refused**
-Make sure `mongod` is running before starting the backend. Check with:
-```bash
-mongosh --eval "db.runCommand({ping:1})"
-```
-
-**ENGINE_SECRET mismatch**
-`backend/.env` and `simulation_engine/.env` must have the same `ENGINE_SECRET` value. The engine will refuse to start if it is missing, and the backend will get 403 errors from the engine if they differ.
-
-**Seeder fails with "Backend unreachable"**
-The seeder retries for 20 seconds. Make sure the backend is fully started (you should see `server_listening` in its console) before the seeder times out.
-
-**Port already in use**
-```bash
-# Find and kill the process on a port (Linux/macOS)
-lsof -ti:8000 | xargs kill
-
-# Windows
-netstat -ano | findstr :8000
-taskkill /PID <pid> /F
-```
-
-**Frontend shows no data**
-1. Check the backend is on port 8000 (`VITE_BACKEND_URL=http://localhost:8000`)
-2. Check `VITE_ACM_RUN_ID` matches `ACM_RUN_ID` in `backend/.env`
-3. Run the seeder if the database is empty

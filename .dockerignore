@@ -1,0 +1,18 @@
+# Keep image builds fast/small (backend image is built from repo root)
+.git
+.gitignore
+README*.md
+setup.md
+
+**/node_modules
+frontend/dist
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.venv
+venv
+
+# Never bake secrets into images
+**/.env
+

@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Allow running this file directly (python app/main.py) by ensuring the
+# simulation_engine root is on sys.path so `import app...` works.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Load .env from simulation_engine root before anything else
 try:
@@ -15,8 +21,8 @@ except ImportError:
 from fastapi import FastAPI, Query, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from .state.global_state import GLOBAL_STATE
-from .state.state_updater import predict_conjunctions, simulate_step
+from app.state.global_state import GLOBAL_STATE
+from app.state.state_updater import predict_conjunctions, simulate_step
 
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 _SIM_LOCK     = asyncio.Lock()
@@ -121,7 +127,7 @@ async def get_predict(
         ids, states = GLOBAL_STATE.get_ids_and_states()
         states_copy = states.copy() if states.size else states
 
-    from .state.state_updater import predict_conjunctions_24h_from_snapshot
+    from app.state.state_updater import predict_conjunctions_24h_from_snapshot
     conjunctions = predict_conjunctions_24h_from_snapshot(
         ids=ids, states=states_copy, horizon_s=horizon_s, dt_s=dt_s
     )
@@ -130,3 +136,13 @@ async def get_predict(
         horizon_s=horizon_s,
         dt_s=dt_s,
     )
+
+
+if __name__ == "__main__":
+    # Convenience entrypoint for local runs (equivalent to:
+    #   python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+    # )
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "9000"))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=True)
