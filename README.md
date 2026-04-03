@@ -199,7 +199,62 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ## Environment Variables Reference
 
-### `backend/.env`
+### Generating Secrets
+
+All secrets must be generated before first run. Run these commands once and paste the output into the respective `.env` files:
+
+```bash
+# JWT_SECRET — 32-byte hex (backend only)
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# ACM_API_KEY — 16-byte hex (backend only)
+node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
+
+# ENGINE_SECRET — 16-byte hex (SAME value in both backend/.env and simulation_engine/.env)
+node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
+
+# FRONTEND_TOKEN_SECRET — 16-byte hex (backend only)
+node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
+```
+
+> **Critical:** `ENGINE_SECRET` must be identical in `backend/.env` and `simulation_engine/.env`. If they differ the backend gets 403 errors from the engine on every simulation tick.
+
+---
+
+### Complete `.env` Files
+
+#### `backend/.env`
+
+```env
+PORT=8000
+MONGODB_URI=mongodb://127.0.0.1:27017/acm
+CORS_ORIGIN=http://localhost:5173
+PYTHON_ENGINE_URL=http://localhost:9000
+ACM_RUN_ID=default
+JWT_SECRET=<output of 32-byte command above>
+ACM_API_KEY=<output of 16-byte command above>
+ENGINE_SECRET=<shared secret — same in both .env files>
+FRONTEND_TOKEN_SECRET=<output of 16-byte command above>
+```
+
+#### `simulation_engine/.env`
+
+```env
+ENGINE_SECRET=<same value as ENGINE_SECRET in backend/.env>
+```
+
+#### `frontend/.env`
+
+```env
+VITE_BACKEND_URL=http://localhost:8000
+VITE_ACM_RUN_ID=default
+```
+
+---
+
+### Variable Reference
+
+#### `backend/.env`
 
 | Variable | Description |
 |---|---|
@@ -208,18 +263,18 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 | `CORS_ORIGIN` | Allowed frontend origin |
 | `PYTHON_ENGINE_URL` | Internal URL of the simulation engine |
 | `ACM_RUN_ID` | Simulation run identifier |
-| `JWT_SECRET` | Secret for signing JWTs (32-byte hex) |
-| `ACM_API_KEY` | API key for machine-to-machine auth |
-| `ENGINE_SECRET` | Shared secret with simulation engine |
-| `FRONTEND_TOKEN_SECRET` | Secret for frontend viewer tokens |
+| `JWT_SECRET` | Secret for signing JWTs — 32-byte hex |
+| `ACM_API_KEY` | API key for machine-to-machine auth — 16-byte hex |
+| `ENGINE_SECRET` | Shared secret with simulation engine — 16-byte hex |
+| `FRONTEND_TOKEN_SECRET` | Secret for frontend viewer tokens — 16-byte hex |
 
-### `simulation_engine/.env`
+#### `simulation_engine/.env`
 
 | Variable | Description |
 |---|---|
-| `ENGINE_SECRET` | Must match `ENGINE_SECRET` in `backend/.env` |
+| `ENGINE_SECRET` | Must be identical to `ENGINE_SECRET` in `backend/.env` |
 
-### `frontend/.env`
+#### `frontend/.env`
 
 | Variable | Description |
 |---|---|
