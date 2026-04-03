@@ -12,34 +12,34 @@ const { requireAuth }     = require("./middleware/auth.middleware");
 const { validateRunId }   = require("./middleware/runId.middleware");
 const { errorMiddleware } = require("./middleware/error.middleware");
 
-const authLimiter = rateLimit({
-  windowMs:        60 * 1000,
-  max:             10,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  message:         { error: "Too many auth attempts, try again later" },
-});
-
-const apiLimiter = rateLimit({
-  windowMs:        60 * 1000,
-  max:             120,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  message:         { error: "Too many requests, slow down" },
-});
-
-const telemetryLimiter = rateLimit({
-  windowMs:        60 * 1000,
-  max:             30,
-  standardHeaders: true,
-  legacyHeaders:   false,
-  message:         { error: "Telemetry rate limit exceeded" },
-});
-
 function createApp({ logger, corsOrigin, runId }) {
   const app = express();
   app.locals.runId  = runId;
   app.locals.logger = logger;
+
+  const authLimiter = rateLimit({
+    windowMs:        60 * 1000,
+    max:             10,
+    standardHeaders: true,
+    legacyHeaders:   false,
+    message:         { error: "Too many auth attempts, try again later" },
+  });
+
+  const apiLimiter = rateLimit({
+    windowMs:        60 * 1000,
+    max:             120,
+    standardHeaders: true,
+    legacyHeaders:   false,
+    message:         { error: "Too many requests, slow down" },
+  });
+
+  const telemetryLimiter = rateLimit({
+    windowMs:        60 * 1000,
+    max:             30,
+    standardHeaders: true,
+    legacyHeaders:   false,
+    message:         { error: "Telemetry rate limit exceeded" },
+  });
 
   app.set("trust proxy", 1);  // correct IP behind reverse proxy
   app.disable("x-powered-by");
@@ -96,7 +96,14 @@ function createApp({ logger, corsOrigin, runId }) {
     message:         { error: "Per-run rate limit exceeded" },
   }));
   api.use(requireAuth);
-  api.use("/telemetry", telemetryLimiter, telemetryRoutes);
+  // Telemetry: extra per-IP object-count guard (30 req × 500 obj = 15k upserts/min)
+  api.use("/telemetry", telemetryLimiter, (req, _res, next) => {
+    const count = Array.isArray(req.body?.objects) ? req.body.objects.length : 0;
+    if (count > 500) {
+      return next(Object.assign(new Error("objects[] exceeds 500 per request on this endpoint"), { statusCode: 429 }));
+    }
+    next();
+  }, telemetryRoutes);
   api.use(simulationRoutes);
   api.use(maneuverRoutes);
   api.use(visualizationRoutes);

@@ -68,10 +68,39 @@ async function stepSimulation(req, res, next) {
       maneuvers_executed: engine.maneuvers,
     };
 
+    // Compute fleet-wide dv_total_ms and fuel_consumed_kg from mass changes
+    // Engine returns current_mass_kg per satellite; fuel burned = initial - current
+    const DRY_MASS_KG = 500.0;
+    const INITIAL_FUEL_KG = 50.0;
+    let dvTotalMs = 0;
+    let fuelConsumedKg = 0;
+    for (const o of engine.objects) {
+      if (typeById.get(o.id) !== "SATELLITE") continue;
+      if (typeof o.current_mass_kg === "number") {
+        const fuelRemaining = Math.max(0, o.current_mass_kg - DRY_MASS_KG);
+        const burned = INITIAL_FUEL_KG - fuelRemaining;
+        if (burned > 0) fuelConsumedKg += burned;
+      }
+    }
+    // Approximate dv_total_ms from maneuver count × avg burn (used for graph scaling)
+    // Real per-burn dv is tracked in the Python engine reasoning strings
+    dvTotalMs = engine.maneuvers > 0
+      ? engine.objects
+          .filter((o) => typeById.get(o.id) === "SATELLITE" && typeof o.current_mass_kg === "number")
+          .reduce((sum, o) => {
+            const ISP = 300.0; const G0 = 9.80665;
+            const m0 = o.current_mass_kg + fuelConsumedKg / Math.max(1, engine.maneuvers);
+            const m1 = o.current_mass_kg;
+            return sum + (m0 > m1 && m1 > 0 ? ISP * G0 * Math.log(m0 / m1) : 0);
+          }, 0)
+      : 0;
+
     broadcast("state_update", {
       timestamp:           sim.newTimestamp,
       collisions_detected: engine.collisions,
       maneuvers_executed:  engine.maneuvers,
+      dv_total_ms:         dvTotalMs,
+      fuel_consumed_kg:    fuelConsumedKg,
       objects:             satObjects,
       orbit_paths:         engine.orbit_paths,
     }, runId);

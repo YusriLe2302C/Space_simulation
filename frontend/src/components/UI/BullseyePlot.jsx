@@ -2,6 +2,7 @@ import { memo, useState, useMemo } from "react";
 import { positionStore } from "../../store/simulationStore";
 import useSimulationStore from "../../store/simulationStore";
 import { panel, sectionLabel, TOKEN } from "./Dashboard";
+import { YELLOW_THRESHOLD_KM, RED_THRESHOLD_KM } from "../../utils/constants";
 
 const SIZE           = 180;
 const CENTER         = SIZE / 2;
@@ -9,16 +10,80 @@ const MAX_TCA_S      = 7200;   // 2-hour window — radial axis in seconds
 const MAX_OBJECTS    = 30;
 const EARTH_RADIUS_KM = 6378.1363;
 
-function dist3d(a, b) {
+// Convert geodetic lat/lon/alt to ECI Cartesian (km).
+// Uses spherical Earth — sufficient for approach vector direction.
+function toECI(lat, lon, alt) {
   const toRad = (d) => (d * Math.PI) / 180;
-  const rA = EARTH_RADIUS_KM + (a.alt ?? 400);
-  const rB = EARTH_RADIUS_KM + (b.alt ?? 400);
-  const ax = rA * Math.cos(toRad(a.lat)) * Math.cos(toRad(a.lon));
-  const ay = rA * Math.cos(toRad(a.lat)) * Math.sin(toRad(a.lon));
-  const az = rA * Math.sin(toRad(a.lat));
-  const bx = rB * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lon));
-  const by = rB * Math.cos(toRad(b.lat)) * Math.sin(toRad(b.lon));
-  const bz = rB * Math.sin(toRad(b.lat));
+  const r = EARTH_RADIUS_KM + (alt ?? 400);
+  const latR = toRad(lat ?? 0);
+  const lonR = toRad(lon ?? 0);
+  return [
+    r * Math.cos(latR) * Math.cos(lonR),
+    r * Math.cos(latR) * Math.sin(lonR),
+    r * Math.sin(latR),
+  ];
+}
+
+// Dot product of two 3-vectors.
+function dot3(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+
+// Cross product of two 3-vectors.
+function cross3(a, b) {
+  return [
+    a[1]*b[2] - a[2]*b[1],
+    a[2]*b[0] - a[0]*b[2],
+    a[0]*b[1] - a[1]*b[0],
+  ];
+}
+
+// Normalise a 3-vector, returns zero vector if near-zero magnitude.
+function norm3(v) {
+  const m = Math.sqrt(dot3(v, v));
+  return m > 1e-9 ? [v[0]/m, v[1]/m, v[2]/m] : [0, 0, 0];
+}
+
+/**
+ * Compute the approach angle of `threat` relative to `sat` in the
+ * satellite's RTN (Radial-Transverse-Normal) frame.
+ *
+ * The relative position vector dr = r_threat - r_sat is projected onto
+ * the RT plane (dropping the Normal component) and the angle is measured
+ * from the Radial axis toward the Transverse axis.
+ *
+ * This gives the true geometric approach direction in the orbital plane,
+ * which is what the spec means by "angle = relative approach vector".
+ *
+ * Returns angle in radians, suitable for Math.sin/cos placement on the plot.
+ */
+function approachAngleRTN(sat, threat) {
+  const rSat    = toECI(sat.lat,    sat.lon,    sat.alt);
+  const rThreat = toECI(threat.lat, threat.lon, threat.alt);
+
+  // Relative position vector (threat relative to sat)
+  const dr = [rThreat[0]-rSat[0], rThreat[1]-rSat[1], rThreat[2]-rSat[2]];
+
+  // RTN frame axes derived from sat position
+  // R = radial (position unit vector)
+  const R = norm3(rSat);
+  // Approximate velocity direction: prograde = cross(Z_hat, R) for LEO
+  // Use a stable reference: if R is near Z, use X instead
+  const ref = Math.abs(R[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  // N = normal to orbital plane = R × ref (approximate h direction)
+  const N = norm3(cross3(R, ref));
+  // T = transverse (along-track) = N × R
+  const T = norm3(cross3(N, R));
+
+  // Project dr onto R and T axes
+  const dr_R = dot3(dr, R);
+  const dr_T = dot3(dr, T);
+
+  // Angle from Radial toward Transverse — this is the approach direction
+  return Math.atan2(dr_T, dr_R);
+}
+
+function dist3d(a, b) {
+  const [ax, ay, az] = toECI(a.lat, a.lon, a.alt);
+  const [bx, by, bz] = toECI(b.lat, b.lon, b.alt);
   return Math.sqrt((ax-bx)**2 + (ay-by)**2 + (az-bz)**2);
 }
 
@@ -74,7 +139,7 @@ const BullseyePlot = memo(function BullseyePlot() {
       <div style={{ ...sectionLabel(), marginBottom: "6px" }}>
         <span>🎯</span>
         <span>BULLSEYE — TCA VIEW</span>
-        <span style={{ marginLeft: "auto", color: TOKEN.textDim, fontSize: "9px" }}>radial = TCA (s) · ±{MAX_TCA_S}s</span>
+        <span style={{ marginLeft: "auto", color: TOKEN.textDim, fontSize: "9px" }}>radial = TCA (s) · angle = RTN approach</span>
       </div>
 
       {satIds.length > 1 && (
@@ -115,17 +180,20 @@ const BullseyePlot = memo(function BullseyePlot() {
         <line x1={0}      y1={CENTER} x2={SIZE}   y2={CENTER} stroke="rgba(0,170,255,0.1)" strokeWidth={0.5} />
 
         {nearby.map((obj, i) => {
-          const dlat  = (obj.lat ?? 0) - (selected?.lat ?? 0);
-          const dlon  = (obj.lon ?? 0) - (selected?.lon ?? 0);
-          const angle = Math.atan2(dlon, dlat);
+          // Angle = approach vector in RTN frame (Radial-Transverse plane)
+          // Computed from ECI relative position of threat w.r.t. selected sat
+          const angle = selected ? approachAngleRTN(selected, obj) : 0;
           // Radial = TCA in seconds (spec §6.2)
           const r     = Math.min(obj.tca_s, MAX_TCA_S);
           const px    = CENTER + Math.sin(angle) * r * scale;
           const py    = CENTER - Math.cos(angle) * r * scale;
-          // Green/Yellow/Red per spec §6.2
-          const color = obj.tca_s <= 1800 ? "#ff3322"
-                      : obj.tca_s <= 3600 ? "#ffcc00"
-                      : "#22cc66";
+          // Green/Yellow/Red per spec §6.2: Red < 1km, Yellow < 5km, Green = safe
+          const miss = obj.risk;  // miss_distance_km from conjunction data
+          const color = miss != null
+            ? (miss < RED_THRESHOLD_KM    ? "#ff3322"
+              : miss < YELLOW_THRESHOLD_KM ? "#ffcc00"
+              : "#22cc66")
+            : "#22cc66";  // no miss data — default safe
           return (
             <g key={i}>
               <circle cx={px} cy={py} r={obj.type === "sat" ? 3.5 : 2} fill={color} opacity={0.85} />
@@ -147,9 +215,9 @@ const BullseyePlot = memo(function BullseyePlot() {
 
       <div style={{ color: TOKEN.textDim, fontSize: "9px", textAlign: "center", marginTop: "4px" }}>
         {nearby.length} conjunctions within {MAX_TCA_S}s
-        {nearby.filter(o => o.tca_s <= 1800).length > 0 && (
+        {nearby.filter(o => o.risk != null && o.risk < RED_THRESHOLD_KM).length > 0 && (
           <span style={{ color: "#ff4422", marginLeft: "6px" }}>
-            · {nearby.filter(o => o.tca_s <= 1800).length} critical (&lt;30min)
+            · {nearby.filter(o => o.risk != null && o.risk < RED_THRESHOLD_KM).length} critical (&lt;{RED_THRESHOLD_KM}km)
           </span>
         )}
       </div>

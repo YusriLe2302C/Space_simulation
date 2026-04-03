@@ -17,12 +17,12 @@ const DvGraph = memo(function DvGraph() {
 
   const points = useMemo(() => {
     if (!history.length) return [];
-    let cumManeuvers = 0;
+    let cumDvMs = 0;
     let cumCollisions = 0;
     return history.map((h) => {
-      cumManeuvers  += h.maneuvers ?? 0;
+      cumDvMs       += h.dvMs ?? 0;
       cumCollisions += h.collisionsAvoided ?? 0;
-      return { x: cumManeuvers, y: cumCollisions };
+      return { x: cumDvMs, y: cumCollisions };
     });
   }, [history]);
 
@@ -58,7 +58,7 @@ const DvGraph = memo(function DvGraph() {
 
         {/* Axis labels */}
         <text x={PAD.left + innerW / 2} y={H - 2} fill={TOKEN.textDim}
-          fontSize="7" textAnchor="middle" fontFamily="monospace">Maneuvers Executed</text>
+          fontSize="7" textAnchor="middle" fontFamily="monospace">Fuel Consumed (ΔV m/s)</text>
         <text x={6} y={PAD.top + innerH / 2} fill={TOKEN.textDim}
           fontSize="7" textAnchor="middle" fontFamily="monospace"
           transform={`rotate(-90,6,${PAD.top + innerH / 2})`}>Avoided</text>
@@ -102,7 +102,7 @@ const DvGraph = memo(function DvGraph() {
 
       {/* Summary row */}
       <div style={{ display: "flex", gap: "12px", marginTop: "4px", fontSize: "9px", color: TOKEN.textDim }}>
-        <span>Burns: <span style={{ color: "#ffaa22" }}>{maneuversTotal}</span></span>
+        <span>ΔV total: <span style={{ color: "#ffaa22" }}>{history.reduce((s, h) => s + (h.dvMs ?? 0), 0).toFixed(1)} m/s</span></span>
         <span>Collisions avoided: <span style={{ color: "#22cc66" }}>{collisionsTotal}</span></span>
         {maneuversTotal > 0 && (
           <span>Efficiency: <span style={{ color: TOKEN.accent }}>

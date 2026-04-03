@@ -141,9 +141,9 @@ const useSimulationStore = create((set, get) => ({
       updates.events = [...incoming, ...get().events].slice(0, 100);
     }
 
-    // Predicted conjunctions from /predict endpoint
-    if (payload.conjunctions?.length) {
-      updates.conjunctions = payload.conjunctions;
+    // Predicted conjunctions from /predict endpoint — clear when resolved
+    if (payload.conjunctions !== undefined) {
+      updates.conjunctions = payload.conjunctions ?? [];
     }
 
     // Collision / maneuver counters
@@ -159,10 +159,11 @@ const useSimulationStore = create((set, get) => ({
       const entry = {
         timestamp:         payload.timestamp ?? new Date().toISOString(),
         collisionsAvoided: avoided,
-        maneuvers:         avoided,
+        dvMs:              typeof payload.dv_total_ms === "number" ? payload.dv_total_ms : avoided,
       };
       updates.dvHistory      = [...get().dvHistory, entry].slice(-200);
       updates.maneuversTotal = get().maneuversTotal + avoided;
+      updates.fuelConsumedKg = get().fuelConsumedKg + (typeof payload.fuel_consumed_kg === "number" ? payload.fuel_consumed_kg : 0);
     }
 
     // Only call set() if something actually changed

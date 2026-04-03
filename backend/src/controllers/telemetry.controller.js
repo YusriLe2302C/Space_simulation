@@ -1,7 +1,7 @@
 const { upsertTelemetryObjects } = require("../services/state.service");
 const CollisionEvent = require("../models/CollisionEvent");
 
-const MAX_OBJECTS = 5000;
+const MAX_OBJECTS = 500;
 
 async function postTelemetry(req, res, next) {
   try {

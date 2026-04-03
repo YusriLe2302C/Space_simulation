@@ -60,7 +60,23 @@ async function main() {
     }
     socket.join(runId);
     logger.info("socket_connected", { id: socket.id, runId });
-    socket.on("disconnect", () => logger.info("socket_disconnected", { id: socket.id }));
+
+    // Per-socket message rate limit — max 20 events/sec
+    // Prevents a single connected client from flooding the server
+    let _msgCount = 0;
+    const _msgReset = setInterval(() => { _msgCount = 0; }, 1000);
+    socket.onAny(() => {
+      _msgCount++;
+      if (_msgCount > 20) {
+        logger.warn("socket_rate_limit", { id: socket.id, runId });
+        socket.disconnect();
+      }
+    });
+
+    socket.on("disconnect", () => {
+      clearInterval(_msgReset);
+      logger.info("socket_disconnected", { id: socket.id });
+    });
   });
 
   // ── Simulation dependencies ─────────────────────────────────────────────────
@@ -122,10 +138,37 @@ async function main() {
       _orbitCache = engine.orbit_paths;
     }
 
+    // Compute fleet-wide fuel_consumed_kg and dv_total_ms from mass changes
+    const _DRY_MASS_KG    = 500.0;
+    const _INIT_FUEL_KG   = 50.0;
+    let _fuelConsumedKg = 0;
+    let _dvTotalMs      = 0;
+    for (const o of engine.objects) {
+      if (typeById.get(o.id) !== "SATELLITE") continue;
+      if (typeof o.current_mass_kg === "number") {
+        const fuelRemaining = Math.max(0, o.current_mass_kg - _DRY_MASS_KG);
+        const burned = _INIT_FUEL_KG - fuelRemaining;
+        if (burned > 0) _fuelConsumedKg += burned;
+      }
+    }
+    if (engine.maneuvers > 0) {
+      const ISP = 300.0; const G0 = 9.80665;
+      for (const o of engine.objects) {
+        if (typeById.get(o.id) !== "SATELLITE") continue;
+        if (typeof o.current_mass_kg === "number" && o.current_mass_kg > 0) {
+          const m1 = o.current_mass_kg;
+          const m0 = m1 + _fuelConsumedKg / Math.max(1, engine.maneuvers);
+          if (m0 > m1) _dvTotalMs += ISP * G0 * Math.log(m0 / m1);
+        }
+      }
+    }
+
     broadcast("state_update", {
       timestamp:           sim.newTimestamp,
       collisions_detected: engine.collisions,
       maneuvers_executed:  engine.maneuvers,
+      dv_total_ms:         _dvTotalMs,
+      fuel_consumed_kg:    _fuelConsumedKg,
       objects:             satObjects,
       orbit_paths:         shouldRefreshOrbits ? _orbitCache : undefined,
     }, env.runId);
@@ -144,7 +187,7 @@ async function main() {
       try {
         await runSimStep();
       } catch (err) {
-        logger.warn("sim_loop_error", { message: err?.message });
+        logger.warn("sim_loop_error", { message: err?.message, stack: err?.stack });
         // Brief pause on error to avoid hammering a broken Python engine
         await new Promise((r) => setTimeout(r, 2000));
         continue;

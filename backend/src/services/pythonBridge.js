@@ -29,7 +29,12 @@ function normalizeEngineResponse(payload) {
     if (!obj || typeof obj !== "object") continue;
     if (typeof obj.id !== "string" || obj.id.trim() === "") continue;
     if (!Array.isArray(obj.state) || obj.state.length !== 6) continue;
-    objects.push({ id: obj.id, state: obj.state.map((n) => Number(n)) });
+    objects.push({
+      id: obj.id,
+      state: obj.state.map((n) => Number(n)),
+      current_mass_kg: typeof obj.current_mass_kg === "number" ? obj.current_mass_kg : undefined,
+      sat_status:      typeof obj.sat_status      === "string"  ? obj.sat_status      : undefined,
+    });
   }
 
   return {
@@ -51,6 +56,7 @@ async function simulateStepHttp({
 }) {
   const url    = `${pythonEngineUrl.replace(/\/+$/, "")}/simulate`;
   const secret = process.env.ENGINE_SECRET;
+  if (!secret) throw Object.assign(new Error("ENGINE_SECRET env var not set"), { statusCode: 500 });
   const body   = JSON.stringify({ objects, step_seconds: stepSeconds });
 
   let attempt = 0;
@@ -101,6 +107,7 @@ async function simulateStepHttp({
 async function predictHttp({ pythonEngineUrl, horizonS = 86400, dtS = 300, timeoutMs = 30000 }) {
   const url    = `${pythonEngineUrl.replace(/\/+$/, "")}/predict?horizon_s=${horizonS}&dt_s=${dtS}`;
   const secret = process.env.ENGINE_SECRET;
+  if (!secret) throw Object.assign(new Error("ENGINE_SECRET env var not set"), { statusCode: 500 });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {

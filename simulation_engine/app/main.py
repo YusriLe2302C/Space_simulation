@@ -50,6 +50,8 @@ class SimulateIn(BaseModel):
 class ObjectOut(BaseModel):
     id: str
     state: list[float] = Field(min_length=6, max_length=6)
+    current_mass_kg: float = Field(default=550.0, ge=0.0)
+    sat_status: str = Field(default="NOMINAL")
 
 
 class SimulateOut(BaseModel):
@@ -86,9 +88,16 @@ async def post_simulate(
             GLOBAL_STATE.upsert_object(obj_id=obj.id, state=obj.state)
         result = simulate_step(step_seconds=float(payload.step_seconds))
 
+    mass_by_id   = result.get("mass_by_id", {})
+    status_by_id = result.get("status_by_id", {})
     return SimulateOut(
         objects=[
-            ObjectOut(id=obj_id, state=state.tolist())
+            ObjectOut(
+                id=obj_id,
+                state=state.tolist(),
+                current_mass_kg=mass_by_id.get(obj_id, 550.0),
+                sat_status=status_by_id.get(obj_id, "NOMINAL"),
+            )
             for obj_id, state in result["objects"].items()
         ],
         collisions=int(result["collisions"]),

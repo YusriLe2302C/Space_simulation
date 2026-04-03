@@ -23,6 +23,13 @@ async function scheduleManeuverSequence({ runId, satelliteObjectId, sequence }) 
   if (!satellite) throw badRequest("satelliteId not found");
 
   const burnTimes = sequence.map((b) => asDate(b.burnTime, "burnTime")).sort((a, b) => a - b);
+
+  // doc §5.4: burn cannot be scheduled earlier than now + 10s (comm delay)
+  const minBurnTime = new Date(Date.now() + ACM.COMM_DELAY_SEC * 1000);
+  if (burnTimes[0] < minBurnTime) {
+    throw badRequest(`burnTime must be at least ${ACM.COMM_DELAY_SEC}s in the future (comm delay)`);
+  }
+
   for (let i = 1; i < burnTimes.length; i += 1) {
     if (burnTimes[i].getTime() - burnTimes[i - 1].getTime() < ACM.MANEUVER_COOLDOWN_SEC * 1000) {
       throw badRequest(`Cooldown violation: burns must be >= ${ACM.MANEUVER_COOLDOWN_SEC} sec apart`);

@@ -256,10 +256,24 @@ def simulate_step(step_seconds: float) -> dict:
     # moved objects apart are not counted as collisions.
     propagated_positions = propagated[:, 0:3]
     from ..spatial.neighbor_search import close_pairs_kdtree
+    from ..collision.risk_assessment import collision_count
     actual_collision_pairs = close_pairs_kdtree(
         propagated_positions, threshold_km=COLLISION_THRESHOLD_KM
     )
-    collisions = len(actual_collision_pairs)
+    # Use Pc-aware collision_count instead of raw pair count
+    propagated_by_id = {obj_id: propagated[i] for i, obj_id in enumerate(ids)}
+    post_approaches = enrich_close_approaches_with_pc(
+        [
+            type("_CA", (), {
+                "a": ids[i], "b": ids[j], "tca_s": 0.0,
+                "miss_distance_km": float(np.linalg.norm(
+                    propagated[i, 0:3] - propagated[j, 0:3]))
+            })()
+            for i, j in actual_collision_pairs
+        ],
+        states_by_id=propagated_by_id,
+    ) if actual_collision_pairs else []
+    collisions = collision_count(post_approaches)
 
     # Build orbit paths for controllable satellites — batched for speed.
     # All satellite states propagated together in one RK4 batch per step.
@@ -282,10 +296,15 @@ def simulate_step(step_seconds: float) -> dict:
     # Persist state after every step so a restart can resume cleanly
     GLOBAL_STATE.save()
 
+    mass_by_id   = {obj_id: GLOBAL_STATE.objects[obj_id].current_mass_kg for obj_id in ids}
+    status_by_id = {obj_id: GLOBAL_STATE.objects[obj_id].status           for obj_id in ids}
+
     return {
-        "objects":     {obj_id: propagated[i] for i, obj_id in enumerate(ids)},
-        "collisions":  collisions,
-        "maneuvers":   maneuvers,
-        "reasoning":   maneuver_reasoning,
-        "orbit_paths": orbit_paths,
+        "objects":      {obj_id: propagated[i] for i, obj_id in enumerate(ids)},
+        "collisions":   collisions,
+        "maneuvers":    maneuvers,
+        "reasoning":    maneuver_reasoning,
+        "orbit_paths":  orbit_paths,
+        "mass_by_id":   mass_by_id,
+        "status_by_id": status_by_id,
     }

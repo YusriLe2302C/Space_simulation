@@ -1,3 +1,4 @@
+const sanitize = require("mongo-sanitize");
 const Satellite = require("../models/Satellite");
 const Debris = require("../models/Debris");
 const SimulationState = require("../models/SimulationState");
@@ -9,9 +10,13 @@ async function upsertTelemetryObjects({ timestamp, objects, runId }) {
   const debrisOps = [];
 
   for (const obj of objects) {
+    // Sanitize string fields to strip MongoDB operator keys ($ prefix)
+    const safeId   = sanitize(obj.id);
+    const safeName = obj.name ? sanitize(obj.name) : undefined;
+
     const update = {
       $set: {
-        objectId: obj.id,
+        objectId: safeId,
         lastTelemetryAt: ts,
         latestEci: {
           timestamp: ts,
@@ -19,7 +24,7 @@ async function upsertTelemetryObjects({ timestamp, objects, runId }) {
           v: obj.v,
           runId,
         },
-        ...(obj.type === "SATELLITE" && obj.name ? { name: obj.name } : {}),
+        ...(obj.type === "SATELLITE" && safeName ? { name: safeName } : {}),
       },
       $setOnInsert: {
         ...(obj.type === "SATELLITE" ? { status: "active" } : {}),
@@ -28,11 +33,11 @@ async function upsertTelemetryObjects({ timestamp, objects, runId }) {
 
     if (obj.type === "SATELLITE") {
       satelliteOps.push({
-        updateOne: { filter: { objectId: obj.id }, update, upsert: true },
+        updateOne: { filter: { objectId: safeId }, update, upsert: true },
       });
     } else {
       debrisOps.push({
-        updateOne: { filter: { objectId: obj.id }, update, upsert: true },
+        updateOne: { filter: { objectId: safeId }, update, upsert: true },
       });
     }
   }
@@ -129,12 +134,15 @@ async function applySimulationResults({ timestampIso, runId, objects, typeById }
 
     const type = typeById?.get(obj.id);
     if (type === "SATELLITE") {
-      // Compute fuel_kg from current_mass if engine returns it, else keep existing
       const fuelUpdate = typeof obj.current_mass_kg === "number"
-        ? { fuel_kg: Math.max(0, obj.current_mass_kg - 500.0) }  // current - dry_mass
+        ? { fuel_kg: Math.max(0, obj.current_mass_kg - 500.0) }
+        : {};
+      // Map Python GRAVEYARD status to Mongoose enum value
+      const statusUpdate = obj.sat_status === "GRAVEYARD"
+        ? { status: "graveyard" }
         : {};
       satOps.push({ updateOne: { filter: { objectId: obj.id }, update: {
-        $set: { lastTelemetryAt: ts, latestEci: { timestamp: ts, runId, r, v }, ...fuelUpdate },
+        $set: { lastTelemetryAt: ts, latestEci: { timestamp: ts, runId, r, v }, ...fuelUpdate, ...statusUpdate },
       } } });
     } else if (type === "DEBRIS") {
       debrisOps.push({ updateOne: { filter: { objectId: obj.id }, update } });

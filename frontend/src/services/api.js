@@ -15,12 +15,11 @@ async function getToken() {
   if (_token && Date.now() < _tokenExpiry - 60_000) return _token;
   if (_tokenFetch) return _tokenFetch;
 
-  _tokenFetch = fetch(`${API_BASE_URL}/auth/token`, {
+  // Use the BFF frontend-token endpoint — no secret sent from the browser.
+  // The backend issues a read-only viewer JWT without requiring a client secret.
+  _tokenFetch = fetch(`${API_BASE_URL}/auth/frontend-token`, {
     method:  "POST",
     headers: { "content-type": "application/json" },
-    body:    JSON.stringify({
-      api_key: import.meta.env.VITE_ACM_API_KEY ?? "",
-    }),
   })
     .then((res) => {
       if (!res.ok) throw new Error(`Auth failed: HTTP ${res.status}`);

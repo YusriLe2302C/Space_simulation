@@ -3,6 +3,7 @@ const { getSnapshot } = require("../services/state.service");
 const EARTH_RADIUS_KM = 6378.137;  // doc §3.2
 const RAD2DEG = 180 / Math.PI;
 
+
 /**
  * Convert ECI Cartesian (km) to geodetic lat / lon / alt.
  * Uses a spherical Earth model — sufficient for visualization.
@@ -20,7 +21,8 @@ function eciToLatLonAlt(r) {
 
 async function getVisualizationSnapshot(req, res, next) {
   try {
-    const runId = req.runId ?? req.app.locals.runId;
+    const runId = req.runId;
+    if (!runId) return res.status(400).json({ error: "Missing runId" });
     const { timestamp, satellites, debris } = await getSnapshot({ runId });
 
     res.json({

@@ -10,7 +10,7 @@
 
 require("dotenv").config({ path: require("path").join(__dirname, "../../.env") });
 
-const BACKEND_URL = `http://localhost:${process.env.PORT ?? 3000}`;
+const BACKEND_URL = `http://localhost:${process.env.PORT ?? 8000}`;
 const API_KEY     = process.env.ACM_API_KEY;
 
 if (!API_KEY) {
@@ -158,7 +158,11 @@ async function getToken() {
 async function postTelemetry(token, objects) {
   const res = await fetch(`${BACKEND_URL}/api/telemetry`, {
     method: "POST",
-    headers: { "content-type": "application/json", "authorization": `Bearer ${token}` },
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${token}`,
+      "x-run-id": process.env.ACM_RUN_ID ?? "default",
+    },
     body: JSON.stringify({
       timestamp: new Date().toISOString(),
       objects: objects.map((o) => ({
@@ -176,7 +180,11 @@ async function postTelemetry(token, objects) {
 async function triggerSimStep(token) {
   const res = await fetch(`${BACKEND_URL}/api/simulate/step`, {
     method: "POST",
-    headers: { "content-type": "application/json", "authorization": `Bearer ${token}` },
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${token}`,
+      "x-run-id": process.env.ACM_RUN_ID ?? "default",
+    },
     body: JSON.stringify({ step_seconds: 60 }),
   });
   if (!res.ok) console.warn(`[seed] simulate/step non-fatal: ${res.status}`);
